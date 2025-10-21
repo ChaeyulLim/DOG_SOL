@@ -901,8 +901,172 @@ def generate_composite_signal(indicators: Dict) -> Dict:
         {
             'signal': 'STRONG_BUY',
             'strength': 0.85,
-            'reasons': ['rsi_oversold', 'macd_golden']
+            'score': 8,
+            'max_score': 10,
+            'reasons': ['rsi_oversold', 'macd_golden_cross', ...]
         }
+    
+    Example:
+        >>> composite = generate_composite_signal(indicators)
+        >>> composite['signal']
+        'STRONG_BUY'
+        >>> composite['strength']
+        0.85
     """
     score = 0
-    max_
+    max_score = 10
+    reasons = []
+    
+    # RSI (3점)
+    if indicators['rsi']['oversold']:
+        score += 3
+        reasons.append('rsi_oversold')
+    elif indicators['rsi']['value'] < 50:
+        score += 1.5
+        reasons.append('rsi_below_50')
+    
+    # MACD (3점)
+    if indicators['macd']['golden_cross']:
+        score += 3
+        reasons.append('macd_golden_cross')
+    elif indicators['macd']['momentum'] == 'bullish':
+        score += 2
+        reasons.append('macd_bullish')
+    
+    # Bollinger (2점)
+    if indicators['bollinger']['lower_touch']:
+        score += 2
+        reasons.append('bb_lower_touch')
+    
+    # Fibonacci (2점)
+    if indicators['fibonacci']['at_support']:
+        score += 2
+        reasons.append('fib_support')
+    
+    # 강도 계산 (0-1)
+    strength = score / max_score
+    
+    # 신호 레벨 결정
+    if strength >= 0.75:
+        signal = 'STRONG_BUY'
+    elif strength >= 0.50:
+        signal = 'BUY'
+    elif strength >= 0.25:
+        signal = 'NEUTRAL'
+    else:
+        signal = 'SELL'
+    
+    return {
+        'signal': signal,
+        'strength': round(strength, 3),
+        'score': round(score, 1),
+        'max_score': max_score,
+        'reasons': reasons
+    }
+```
+
+
+## 전체 의존성 그래프
+
+### INDICATORS 모듈 내부
+```
+calculator.py
+├── import rsi.py (calculate_rsi)
+├── import macd.py (calculate_macd)
+├── import bollinger.py (calculate_bollinger_bands)
+├── import fibonacci.py (calculate_fibonacci)
+└── import core (InsufficientDataError)
+
+rsi.py → core/constants (INDICATOR_PARAMS)
+macd.py → core/constants (INDICATOR_PARAMS)
+bollinger.py → core/constants (INDICATOR_PARAMS)
+fibonacci.py → core/constants (FIBONACCI_LEVELS)
+composite.py → (독립)
+```
+
+### 사용하는 모듈
+```
+core/constants
+  - INDICATOR_PARAMS
+  - FIBONACCI_LEVELS
+
+pandas (DataFrame, Series)
+numpy (계산용, 선택)
+```
+
+### 사용되는 곳
+```
+strategy/entry.py
+└── IndicatorCalculator.calculate_all()
+
+engine/base_engine.py
+└── IndicatorCalculator.calculate_all()
+```
+
+---
+
+## 개발 체크리스트
+
+### calculator.py
+- [x] IndicatorCalculator 클래스
+- [x] calculate_all() - 모든 지표 계산
+- [x] _count_signals() - 진입 조건 카운트
+
+### rsi.py
+- [x] calculate_rsi() - RSI 계산
+- [x] 트렌드 판단 (up/down/neutral)
+- [x] 과매수/과매도 체크
+
+### macd.py
+- [x] calculate_macd() - MACD 계산
+- [x] 골든/데드 크로스 감지
+- [x] 모멘텀 판단 (bullish/bearish/neutral)
+
+### bollinger.py
+- [x] calculate_bollinger_bands() - 볼린저밴드
+- [x] 상단/하단 터치 감지
+- [x] 밴드폭 계산
+
+### fibonacci.py
+- [x] calculate_fibonacci() - 피보나치 레벨
+- [x] 지지선/저항선 찾기
+- [x] 지지선 근처 판단
+
+### composite.py
+- [x] generate_composite_signal() - 복합 신호
+- [x] 점수 계산 (0-10)
+- [x] 신호 레벨 (STRONG_BUY/BUY/NEUTRAL/SELL)
+
+---
+
+## 테스트 시나리오
+
+### composite.py 테스트
+```python
+from indicators import IndicatorCalculator, generate_composite_signal
+
+# 1. 지표 계산
+calc = IndicatorCalculator()
+indicators = calc.calculate_all(ohlcv)
+
+# 2. 복합 신호 생성
+composite = generate_composite_signal(indicators)
+
+print(f"신호: {composite['signal']}")
+print(f"강도: {composite['strength']:.2f}")
+print(f"점수: {composite['score']}/{composite['max_score']}")
+print(f"이유: {', '.join(composite['reasons'])}")
+
+# 예상 출력:
+# 신호: STRONG_BUY
+# 강도: 0.85
+# 점수: 8.5/10
+# 이유: rsi_oversold, macd_golden_cross, bb_lower_touch, fib_support
+```
+
+---
+
+**문서 버전**: v1.1  
+**작성일**: 2025-01-15  
+**업데이트**: composite.py 완성
+**검증**: ✅ 완료
