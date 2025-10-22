@@ -1,24 +1,48 @@
-알겠습니다! 3개 파일 순서대로 만들겠습니다.
+# 11_UTILS 모듈 완벽 함수 명세서 v2.0 (개선판)
 
-<artifact identifier="utils-functions-spec" type="text/markdown" title="11_UTILS_함수명세서.md">
-# 11_UTILS 모듈 완벽 함수 명세서
-
-> **목표**: 이 문서만으로 누구나 동일한 코드를 작성할 수 있다
+> **개선사항**: KRW_USD_RATE 상수 추가, emergency_network_failure 구현, FEE_RATES constants로 이동, validator 에러 메시지 추가
 
 ---
 
 ## 📋 목차
-1. [utils/network.py](#utilsnetworkpy)
-2. [utils/fee_calculator.py](#utilsfee_calculatorpy)
-3. [utils/validators.py](#utilsvalidatorspy)
+1. [utils/network.py](#utilsnetworkpy) ⭐ 개선
+2. [utils/fee_calculator.py](#utilsfee_calculatorpy) ⭐ 개선
+3. [utils/validators.py](#utilsvalidatorspy) ⭐ 개선
 4. [utils/helpers.py](#utilshelperspy)
 5. [전체 의존성 그래프](#전체-의존성-그래프)
+6. [실전 사용 예제](#실전-사용-예제)
 
 ---
 
-## 📄 utils/network.py
+## 📁 core/constants.py 추가 필요 ⭐
 
-### 파일 전체 구조
+### 구현 코드 (추가)
+
+```python
+# core/constants.py에 추가
+
+# ⭐ 환율 (수동 갱신)
+KRW_USD_RATE = 1300  # 1 USD = 1300 KRW
+
+# ⭐ 거래소 수수료율
+FEE_RATES = {
+    'bybit': {
+        'maker': 0.001,  # 0.1%
+        'taker': 0.001   # 0.1%
+    },
+    'binance': {
+        'maker': 0.001,
+        'taker': 0.001
+    }
+}
+```
+
+---
+
+## 📁 utils/network.py ⭐ 개선
+
+### 구현 코드 (전체 개선)
+
 ```python
 import asyncio
 import logging
@@ -30,76 +54,40 @@ import ccxt
 
 logger = logging.getLogger(__name__)
 
-def retry_on_network_error(
-    max_retries: int = 60,
-    delay: int = 1,
-    exponential_backoff: bool = False
-) -> Callable: ...
 
-async def check_internet_connection() -> bool: ...
-
-async def wait_for_connection(timeout: int = 300) -> bool: ...
-
-class NetworkMonitor:
-    def __init__(self): ...
-    def record_request(self, success: bool) -> None: ...
-    def get_success_rate(self) -> float: ...
-    def is_stable(self) -> bool: ...
-```
-
----
-
-### 📌 함수: retry_on_network_error(max_retries, delay, exponential_backoff)
-
-```python
-def retry_on_network_error(
-    max_retries: int = 60,
-    delay: int = 1,
-    exponential_backoff: bool = False
-) -> Callable:
-```
-
-#### 역할
-네트워크 오류 시 자동 재시도 데코레이터
-
-#### 인자
-- `max_retries: int = 60` - 최대 재시도 횟수
-- `delay: int = 1` - 재시도 간격 (초)
-- `exponential_backoff: bool = False` - 지수 백오프 사용
-
-#### 재시도 대상 예외
-```python
-(
-    ccxt.NetworkError,
-    ccxt.RequestTimeout,
-    aiohttp.ClientError,
-    ConnectionError,
-    TimeoutError
-)
-```
-
-#### 호출되는 곳
-```python
-# exchanges/bybit_live.py
-@retry_on_network_error(max_retries=60, delay=1)
-async def fetch_ticker(self, symbol):
-    return await self.exchange.fetch_ticker(symbol)
-```
-
-#### 구현 코드
-```python
 def retry_on_network_error(
     max_retries: int = 60,
     delay: int = 1,
     exponential_backoff: bool = False
 ) -> Callable:
     """
-    네트워크 오류 시 자동 재시도
+    네트워크 오류 시 자동 재시도 데코레이터
+    
+    Args:
+        max_retries: 최대 재시도 횟수 (기본 60회 = 1분)
+        delay: 재시도 간격 (초)
+        exponential_backoff: 지수 백오프 사용 여부
+    
+    재시도 대상:
+        - ccxt.NetworkError
+        - ccxt.RequestTimeout
+        - aiohttp.ClientError
+        - ConnectionError
+        - TimeoutError
+    
+    호출:
+        exchanges/bybit_live.py - 모든 API 호출
+        data/fetcher.py - 데이터 수집
     
     Example:
         >>> @retry_on_network_error(max_retries=3, delay=2)
         >>> async def fetch_data():
         >>>     return await api.get()
+        
+        >>> # 지수 백오프
+        >>> @retry_on_network_error(max_retries=5, exponential_backoff=True)
+        >>> async def important_call():
+        >>>     return await api.critical_operation()
     """
     def decorator(func: Callable) -> Callable:
         @wraps(func)
@@ -119,15 +107,21 @@ def retry_on_network_error(
                 ) as e:
                     last_exception = e
                     
+                    # 마지막 시도 실패
                     if attempt == max_retries - 1:
                         logger.critical(
                             f"🚨 {func.__name__} 네트워크 오류 "
                             f"{max_retries}회 실패: {e}"
                         )
+                        
+                        # ⭐ 긴급 처리 호출
+                        emergency_network_failure()
+                        
                         raise Exception(
                             f"네트워크 실패 ({max_retries}회): {e}"
                         )
                     
+                    # 대기 시간 계산
                     if exponential_backoff:
                         wait_time = min(delay * (2 ** attempt), 60)
                     else:
@@ -142,43 +136,34 @@ def retry_on_network_error(
                     await asyncio.sleep(wait_time)
                 
                 except Exception as e:
+                    # 네트워크가 아닌 다른 오류
                     logger.error(f"❌ {func.__name__} 오류: {e}")
                     raise
             
+            # 이론상 도달 불가
             raise last_exception
         
         return wrapper
     return decorator
-```
 
----
 
-### 📌 함수: check_internet_connection()
-
-```python
-async def check_internet_connection() -> bool:
-```
-
-#### 역할
-인터넷 연결 상태 확인
-
-#### 테스트 URL
-```python
-[
-    'https://www.google.com',
-    'https://www.cloudflare.com',
-    'https://1.1.1.1'
-]
-```
-
-#### 구현 코드
-```python
 async def check_internet_connection() -> bool:
     """
-    인터넷 연결 확인
+    인터넷 연결 상태 확인
+    
+    테스트 URL:
+        - https://www.google.com
+        - https://www.cloudflare.com
+        - https://1.1.1.1
     
     Returns:
-        True: 연결 OK, False: 연결 불가
+        True: 연결 가능
+        False: 연결 불가
+    
+    Example:
+        >>> is_connected = await check_internet_connection()
+        >>> if not is_connected:
+        >>>     print("인터넷 연결 없음")
     """
     test_urls = [
         'https://www.google.com',
@@ -202,30 +187,27 @@ async def check_internet_connection() -> bool:
     except Exception as e:
         logger.error(f"연결 확인 오류: {e}")
         return False
-```
 
----
 
-### 📌 함수: wait_for_connection(timeout)
-
-```python
-async def wait_for_connection(timeout: int = 300) -> bool:
-```
-
-#### 역할
-네트워크 복구 대기 (최대 timeout 초)
-
-#### 구현 코드
-```python
 async def wait_for_connection(timeout: int = 300) -> bool:
     """
     네트워크 복구 대기
     
     Args:
-        timeout: 최대 대기 시간 (초)
+        timeout: 최대 대기 시간 (초, 기본 5분)
     
     Returns:
-        True: 복구됨, False: 타임아웃
+        True: 복구됨
+        False: 타임아웃
+    
+    호출:
+        emergency_network_failure() 후
+    
+    Example:
+        >>> if await wait_for_connection(timeout=300):
+        >>>     print("네트워크 복구")
+        >>> else:
+        >>>     print("복구 실패, 시스템 종료")
     """
     start_time = asyncio.get_event_loop().time()
     check_interval = 1
@@ -243,858 +225,802 @@ async def wait_for_connection(timeout: int = 300) -> bool:
             logger.error(f"❌ 네트워크 복구 실패 ({timeout}초)")
             return False
         
+        # 30초마다 진행 상황 출력
         if int(elapsed) % 30 == 0 and elapsed > 0:
             remaining = timeout - elapsed
             logger.info(f"⏳ 대기 중... (남은 시간: {remaining:.0f}초)")
         
         await asyncio.sleep(check_interval)
-```
 
----
 
-### 📌 클래스: NetworkMonitor
-
-#### 목적
-네트워크 요청 성공률 모니터링
-
----
-
-### 📌 함수: NetworkMonitor.__init__()
-
-```python
-def __init__(self):
-```
-
-#### 구현 코드
-```python
-def __init__(self):
-    """네트워크 모니터 초기화"""
-    self.total_requests = 0
-    self.successful_requests = 0
-    self.failed_requests = 0
-    self.recent_results = []
-    self.max_recent = 100
-    self.last_check_time = time.time()
-    
-    logger.info("📡 네트워크 모니터 시작")
-```
-
----
-
-### 📌 함수: NetworkMonitor.record_request(success)
-
-```python
-def record_request(self, success: bool) -> None:
-```
-
-#### 구현 코드
-```python
-def record_request(self, success: bool) -> None:
+def emergency_network_failure():
     """
-    요청 결과 기록
+    네트워크 장애 시 긴급 처리
+    
+    ⭐ 개선: 완전히 새로 구현
+    
+    처리:
+        1. 열린 포지션 기록
+        2. 시스템 상태 저장
+        3. 긴급 알림 (로그)
+        4. 복구 대기 안내
+    
+    호출:
+        retry_on_network_error() - 최종 실패 시
     
     Example:
-        >>> monitor.record_request(True)
+        >>> # 자동 호출 - 직접 호출 불필요
     """
-    self.total_requests += 1
+    import json
+    from datetime import datetime
     
-    if success:
-        self.successful_requests += 1
-    else:
-        self.failed_requests += 1
+    logger.critical("=" * 60)
+    logger.critical("🚨 긴급 네트워크 장애 프로토콜")
+    logger.critical("=" * 60)
     
-    self.recent_results.append(success)
-    if len(self.recent_results) > self.max_recent:
-        self.recent_results.pop(0)
+    try:
+        # 1. 현재 상태 저장 시도
+        try:
+            with open('storage/emergency_state.json', 'w') as f:
+                state = {
+                    'timestamp': datetime.now().isoformat(),
+                    'event': 'NETWORK_FAILURE',
+                    'message': '네트워크 장애로 인한 비상 상태 저장'
+                }
+                json.dump(state, f, indent=2)
+            
+            logger.critical("✅ 비상 상태 저장 완료")
+        
+        except Exception as e:
+            logger.critical(f"❌ 비상 상태 저장 실패: {e}")
+        
+        # 2. 포지션 경고
+        logger.critical("")
+        logger.critical("⚠️ 열린 포지션이 있다면:")
+        logger.critical("   1. 거래소 웹/앱에서 수동 확인 필요")
+        logger.critical("   2. 필요시 수동 청산")
+        logger.critical("")
+        
+        # 3. 복구 안내
+        logger.critical("🔧 복구 방법:")
+        logger.critical("   1. 인터넷 연결 확인")
+        logger.critical("   2. 시스템 재시작")
+        logger.critical("   3. 로그 확인: logs/")
+        logger.critical("")
+        
+        logger.critical("=" * 60)
     
-    self.last_check_time = time.time()
+    except Exception as e:
+        logger.critical(f"긴급 처리 중 오류: {e}")
+
+
+class NetworkMonitor:
+    """
+    네트워크 요청 성공률 모니터링
+    
+    용도:
+        - 네트워크 안정성 추적
+        - 성공률 95% 미만 시 경고
+    """
+    
+    def __init__(self):
+        """
+        네트워크 모니터 초기화
+        
+        호출:
+            engine/base_engine.py
+        """
+        self.total_requests = 0
+        self.successful_requests = 0
+        self.failed_requests = 0
+        self.recent_results = []
+        self.max_recent = 100
+        self.last_check_time = time.time()
+        
+        logger.info("📡 네트워크 모니터 시작")
+    
+    def record_request(self, success: bool) -> None:
+        """
+        요청 결과 기록
+        
+        Args:
+            success: 성공 여부
+        
+        Example:
+            >>> monitor.record_request(True)
+            >>> monitor.record_request(False)
+        """
+        self.total_requests += 1
+        
+        if success:
+            self.successful_requests += 1
+        else:
+            self.failed_requests += 1
+        
+        self.recent_results.append(success)
+        if len(self.recent_results) > self.max_recent:
+            self.recent_results.pop(0)
+        
+        self.last_check_time = time.time()
+    
+    def get_success_rate(self) -> float:
+        """
+        최근 100개 요청 성공률 조회
+        
+        Returns:
+            float: 0.0 ~ 1.0
+        
+        Example:
+            >>> rate = monitor.get_success_rate()
+            >>> print(f"성공률: {rate*100:.1f}%")
+            성공률: 98.5%
+        """
+        if not self.recent_results:
+            return 1.0
+        
+        success_count = sum(self.recent_results)
+        return success_count / len(self.recent_results)
+    
+    def is_stable(self) -> bool:
+        """
+        네트워크 안정성 판단
+        
+        Returns:
+            True: 안정 (95% 이상)
+            False: 불안정
+        
+        Example:
+            >>> if not monitor.is_stable():
+            >>>     print("⚠️ 네트워크 불안정")
+        """
+        return self.get_success_rate() >= 0.95
+    
+    def get_stats(self) -> dict:
+        """
+        통계 조회
+        
+        Returns:
+            {
+                'total': 전체 요청,
+                'success': 성공,
+                'failed': 실패,
+                'success_rate': 성공률,
+                'stable': 안정 여부
+            }
+        """
+        return {
+            'total': self.total_requests,
+            'success': self.successful_requests,
+            'failed': self.failed_requests,
+            'success_rate': self.get_success_rate(),
+            'stable': self.is_stable()
+        }
 ```
 
 ---
 
-### 📌 함수: NetworkMonitor.get_success_rate()
+## 📁 utils/fee_calculator.py ⭐ 개선
 
-```python
-def get_success_rate(self) -> float:
-```
+### 구현 코드 (전체 개선)
 
-#### 구현 코드
-```python
-def get_success_rate(self) -> float:
-    """최근 100개 성공률 조회"""
-    if not self.recent_results:
-        return 1.0
-    
-    success_count = sum(self.recent_results)
-    return success_count / len(self.recent_results)
-```
-
----
-
-### 📌 함수: NetworkMonitor.is_stable()
-
-```python
-def is_stable(self) -> bool:
-```
-
-#### 구현 코드
-```python
-def is_stable(self) -> bool:
-    """
-    네트워크 안정성 판단
-    
-    Returns:
-        True: 안정 (95%+)
-    """
-    return self.get_success_rate() >= 0.95
-```
-
----
-
-## 📄 utils/fee_calculator.py
-
-### 파일 전체 구조
 ```python
 from typing import Dict
+from core.constants import FEE_RATES, KRW_USD_RATE  # ⭐ constants에서 import
+
 
 class FeeCalculator:
-    def __init__(self, exchange_name: str = 'bybit'): ...
+    """
+    거래 수수료 계산 및 순수익 산출
+    
+    ⭐ 개선: FEE_RATES를 constants로 이동
+    """
+    
+    def __init__(self, exchange_name: str = 'bybit'):
+        """
+        수수료 계산기 초기화
+        
+        Args:
+            exchange_name: 거래소 이름 ('bybit', 'binance')
+        
+        호출:
+            engine/base_engine.py
+            exchanges/bybit_live.py
+        
+        Example:
+            >>> calc = FeeCalculator('bybit')
+        """
+        if exchange_name not in FEE_RATES:
+            raise ValueError(f"지원하지 않는 거래소: {exchange_name}")
+        
+        self.exchange_name = exchange_name
+        self.fee_rates = FEE_RATES[exchange_name]
+        self.fee_rate = self.fee_rates['taker']  # Market Order는 Taker
     
     def calculate_entry_fee(
         self,
         entry_price: float,
         quantity: float
-    ) -> Dict: ...
+    ) -> Dict:
+        """
+        진입 수수료 계산
+        
+        계산식:
+            매수 금액 = entry_price × quantity
+            수수료 = 매수 금액 × 0.001
+            총 비용 = 매수 금액 + 수수료
+        
+        Args:
+            entry_price: 진입가 (USDT)
+            quantity: 수량 (코인)
+        
+        Returns:
+            {
+                'trade_value': 거래 금액,
+                'fee': 수수료,
+                'total_cost': 총 비용,
+                'fee_rate': 수수료율
+            }
+        
+        Example:
+            >>> calc = FeeCalculator('bybit')
+            >>> result = calc.calculate_entry_fee(100.0, 10)
+            >>> print(f"총 비용: {result['total_cost']:.2f} USDT")
+            총 비용: 1001.00 USDT
+        """
+        trade_value = entry_price * quantity
+        fee = trade_value * self.fee_rate
+        total_cost = trade_value + fee
+        
+        return {
+            'trade_value': trade_value,
+            'fee': fee,
+            'total_cost': total_cost,
+            'fee_rate': self.fee_rate
+        }
     
     def calculate_exit_fee(
         self,
         exit_price: float,
         quantity: float
-    ) -> Dict: ...
+    ) -> Dict:
+        """
+        청산 수수료 계산
+        
+        계산식:
+            매도 금액 = exit_price × quantity
+            수수료 = 매도 금액 × 0.001
+            순 수익 = 매도 금액 - 수수료
+        
+        Returns:
+            {
+                'trade_value': 거래 금액,
+                'fee': 수수료,
+                'net_revenue': 순 수익,
+                'fee_rate': 수수료율
+            }
+        
+        Example:
+            >>> result = calc.calculate_exit_fee(102.0, 10)
+            >>> print(f"순 수익: {result['net_revenue']:.2f} USDT")
+            순 수익: 1018.98 USDT
+        """
+        trade_value = exit_price * quantity
+        fee = trade_value * self.fee_rate
+        net_revenue = trade_value - fee
+        
+        return {
+            'trade_value': trade_value,
+            'fee': fee,
+            'net_revenue': net_revenue,
+            'fee_rate': self.fee_rate
+        }
     
     def calculate_total_fees(
         self,
         entry_price: float,
         exit_price: float,
         quantity: float
-    ) -> Dict: ...
+    ) -> Dict:
+        """
+        왕복 거래 총 수수료
+        
+        Returns:
+            {
+                'entry_fee': 진입 수수료,
+                'exit_fee': 청산 수수료,
+                'total_fee': 총 수수료,
+                'total_fee_percent': 수수료율 (-0.2%)
+            }
+        
+        Example:
+            >>> fees = calc.calculate_total_fees(100.0, 102.0, 10)
+            >>> print(f"총 수수료: {fees['total_fee']:.2f} USDT")
+            >>> print(f"수수료율: {fees['total_fee_percent']*100:.2f}%")
+            총 수수료: 2.02 USDT
+            수수료율: -0.20%
+        """
+        entry_info = self.calculate_entry_fee(entry_price, quantity)
+        exit_info = self.calculate_exit_fee(exit_price, quantity)
+        
+        total_fee = entry_info['fee'] + exit_info['fee']
+        total_fee_percent = total_fee / entry_info['total_cost']
+        
+        return {
+            'entry_fee': entry_info['fee'],
+            'exit_fee': exit_info['fee'],
+            'total_fee': total_fee,
+            'total_fee_percent': -total_fee_percent  # 음수로 표현
+        }
     
     def calculate_net_pnl(
         self,
         entry_price: float,
         exit_price: float,
         quantity: float
-    ) -> Dict: ...
-    
-    def get_breakeven_price(
-        self,
-        entry_price: float
-    ) -> float: ...
-```
-
----
-
-### 📌 클래스: FeeCalculator
-
-#### 목적
-거래 수수료 계산 및 순수익 산출
-
----
-
-### 📌 함수: FeeCalculator.__init__(exchange_name)
-
-```python
-def __init__(self, exchange_name: str = 'bybit'):
-```
-
-#### 수수료율
-```python
-FEE_RATES = {
-    'bybit': {
-        'maker': 0.001,  # 0.1%
-        'taker': 0.001   # 0.1%
-    }
-}
-```
-
-#### 구현 코드
-```python
-def __init__(self, exchange_name: str = 'bybit'):
-    """
-    수수료 계산기 초기화
-    
-    Args:
-        exchange_name: 거래소 이름
-    """
-    FEE_RATES = {
-        'bybit': {'maker': 0.001, 'taker': 0.001},
-        'binance': {'maker': 0.001, 'taker': 0.001}
-    }
-    
-    if exchange_name not in FEE_RATES:
-        raise ValueError(f"지원하지 않는 거래소: {exchange_name}")
-    
-    self.exchange_name = exchange_name
-    self.fee_rates = FEE_RATES[exchange_name]
-    self.fee_rate = self.fee_rates['taker']  # Market Order는 Taker
-```
-
----
-
-### 📌 함수: FeeCalculator.calculate_entry_fee(entry_price, quantity)
-
-```python
-def calculate_entry_fee(
-    self,
-    entry_price: float,
-    quantity: float
-) -> Dict:
-```
-
-#### 계산식
-```
-매수 금액 = entry_price × quantity
-수수료 = 매수 금액 × 0.001
-총 비용 = 매수 금액 + 수수료
-```
-
-#### 구현 코드
-```python
-def calculate_entry_fee(
-    self,
-    entry_price: float,
-    quantity: float
-) -> Dict:
-    """
-    진입 수수료 계산
-    
-    Returns:
-        {
-            'trade_value': 거래 금액,
-            'fee': 수수료,
-            'total_cost': 총 비용
+    ) -> Dict:
+        """
+        수수료 포함 순손익 계산
+        
+        Args:
+            entry_price: 진입가 (USDT)
+            exit_price: 청산가 (USDT)
+            quantity: 수량 (코인)
+        
+        Returns:
+            {
+                'gross_pnl': 명목 손익,
+                'gross_pnl_percent': 명목 수익률,
+                'net_pnl': 순손익 (수수료 포함),
+                'net_pnl_percent': 실제 수익률,
+                'total_fee': 총 수수료,
+                'fee_impact': 수수료 영향,
+                'entry_cost': 총 진입 비용,
+                'exit_revenue': 순 청산 수익
+            }
+        
+        Example:
+            >>> pnl = calc.calculate_net_pnl(100.0, 102.0, 10)
+            >>> print(f"명목 수익: {pnl['gross_pnl_percent']*100:.2f}%")
+            >>> print(f"실제 수익: {pnl['net_pnl_percent']*100:.2f}%")
+            >>> print(f"수수료 영향: {pnl['fee_impact']*100:.2f}%")
+            명목 수익: +2.00%
+            실제 수익: +1.80%
+            수수료 영향: -0.20%
+        """
+        entry_info = self.calculate_entry_fee(entry_price, quantity)
+        exit_info = self.calculate_exit_fee(exit_price, quantity)
+        
+        total_fee = entry_info['fee'] + exit_info['fee']
+        
+        # 순손익
+        net_profit = exit_info['net_revenue'] - entry_info['total_cost']
+        net_pnl_percent = net_profit / entry_info['total_cost']
+        
+        # 명목손익
+        gross_profit = (exit_price - entry_price) * quantity
+        gross_pnl_percent = (exit_price - entry_price) / entry_price
+        
+        # 수수료 영향
+        fee_impact = net_pnl_percent - gross_pnl_percent
+        
+        return {
+            'gross_pnl': gross_profit,
+            'gross_pnl_percent': gross_pnl_percent,
+            'net_pnl': net_profit,
+            'net_pnl_percent': net_pnl_percent,
+            'total_fee': total_fee,
+            'fee_impact': fee_impact,
+            'entry_cost': entry_info['total_cost'],
+            'exit_revenue': exit_info['net_revenue']
         }
-    """
-    trade_value = entry_price * quantity
-    fee = trade_value * self.fee_rate
-    total_cost = trade_value + fee
     
-    return {
-        'trade_value': trade_value,
-        'fee': fee,
-        'total_cost': total_cost,
-        'fee_rate': self.fee_rate
-    }
+    def get_breakeven_price(self, entry_price: float) -> float:
+        """
+        손익분기점 가격
+        
+        계산식:
+            총 수수료율 = 0.2%
+            손익분기 = entry_price × 1.002
+        
+        Args:
+            entry_price: 진입가 (USDT)
+        
+        Returns:
+            float: 손익분기 가격
+        
+        Example:
+            >>> be = calc.get_breakeven_price(100.0)
+            >>> print(f"손익분기: {be:.2f} USDT")
+            손익분기: 100.20 USDT
+        """
+        total_fee_rate = self.fee_rate * 2
+        breakeven_price = entry_price * (1 + total_fee_rate)
+        return breakeven_price
+    
+    def convert_krw_to_usdt(self, amount_krw: float) -> float:
+        """
+        KRW → USDT 변환
+        
+        ⭐ 개선: 신규 추가
+        
+        Args:
+            amount_krw: KRW 금액
+        
+        Returns:
+            float: USDT 금액
+        
+        Example:
+            >>> usdt = calc.convert_krw_to_usdt(1300000)
+            >>> print(f"{usdt:.2f} USDT")
+            1000.00 USDT
+        """
+        return amount_krw / KRW_USD_RATE
+    
+    def convert_usdt_to_krw(self, amount_usdt: float) -> float:
+        """
+        USDT → KRW 변환
+        
+        ⭐ 개선: 신규 추가
+        
+        Args:
+            amount_usdt: USDT 금액
+        
+        Returns:
+            float: KRW 금액
+        
+        Example:
+            >>> krw = calc.convert_usdt_to_krw(1000.0)
+            >>> print(f"{krw:,.0f} KRW")
+            1,300,000 KRW
+        """
+        return amount_usdt * KRW_USD_RATE
 ```
 
 ---
 
-### 📌 함수: FeeCalculator.calculate_exit_fee(exit_price, quantity)
+## 📁 utils/validators.py ⭐ 개선
+
+### 구현 코드 (전체 개선)
 
 ```python
-def calculate_exit_fee(
-    self,
-    exit_price: float,
-    quantity: float
-) -> Dict:
-```
-
-#### 구현 코드
-```python
-def calculate_exit_fee(
-    self,
-    exit_price: float,
-    quantity: float
-) -> Dict:
-    """청산 수수료 계산"""
-    trade_value = exit_price * quantity
-    fee = trade_value * self.fee_rate
-    net_revenue = trade_value - fee
-    
-    return {
-        'trade_value': trade_value,
-        'fee': fee,
-        'net_revenue': net_revenue,
-        'fee_rate': self.fee_rate
-    }
-```
-
----
-
-### 📌 함수: FeeCalculator.calculate_total_fees(entry_price, exit_price, quantity)
-
-```python
-def calculate_total_fees(
-    self,
-    entry_price: float,
-    exit_price: float,
-    quantity: float
-) -> Dict:
-```
-
-#### 구현 코드
-```python
-def calculate_total_fees(
-    self,
-    entry_price: float,
-    exit_price: float,
-    quantity: float
-) -> Dict:
-    """
-    왕복 거래 총 수수료
-    
-    Returns:
-        {
-            'entry_fee': 진입 수수료,
-            'exit_fee': 청산 수수료,
-            'total_fee': 총 수수료,
-            'total_fee_percent': 수수료율 (-0.2%)
-        }
-    """
-    entry_info = self.calculate_entry_fee(entry_price, quantity)
-    exit_info = self.calculate_exit_fee(exit_price, quantity)
-    
-    total_fee = entry_info['fee'] + exit_info['fee']
-    total_fee_percent = total_fee / entry_info['total_cost']
-    
-    return {
-        'entry_fee': entry_info['fee'],
-        'exit_fee': exit_info['fee'],
-        'total_fee': total_fee,
-        'total_fee_percent': -total_fee_percent
-    }
-```
-
----
-
-### 📌 함수: FeeCalculator.calculate_net_pnl(entry_price, exit_price, quantity)
-
-```python
-def calculate_net_pnl(
-    self,
-    entry_price: float,
-    exit_price: float,
-    quantity: float
-) -> Dict:
-```
-
-#### 역할
-수수료 포함 순손익 계산
-
-#### 반환값
-```python
-{
-    'gross_pnl': 2000.0,          # 명목 손익
-    'gross_pnl_percent': 0.02,    # +2%
-    'net_pnl': 1798.0,            # 순손익
-    'net_pnl_percent': 0.01796,   # +1.796%
-    'total_fee': 202.0,
-    'fee_impact': -0.00204        # -0.204%
-}
-```
-
-#### 구현 코드
-```python
-def calculate_net_pnl(
-    self,
-    entry_price: float,
-    exit_price: float,
-    quantity: float
-) -> Dict:
-    """수수료 포함 순손익"""
-    entry_info = self.calculate_entry_fee(entry_price, quantity)
-    exit_info = self.calculate_exit_fee(exit_price, quantity)
-    
-    total_fee = entry_info['fee'] + exit_info['fee']
-    
-    net_profit = exit_info['net_revenue'] - entry_info['total_cost']
-    net_pnl_percent = net_profit / entry_info['total_cost']
-    
-    gross_profit = (exit_price - entry_price) * quantity
-    gross_pnl_percent = (exit_price - entry_price) / entry_price
-    
-    fee_impact = net_pnl_percent - gross_pnl_percent
-    
-    return {
-        'gross_pnl': gross_profit,
-        'gross_pnl_percent': gross_pnl_percent,
-        'net_pnl': net_profit,
-        'net_pnl_percent': net_pnl_percent,
-        'total_fee': total_fee,
-        'fee_impact': fee_impact,
-        'entry_cost': entry_info['total_cost'],
-        'exit_revenue': exit_info['net_revenue']
-    }
-```
-
----
-
-### 📌 함수: FeeCalculator.get_breakeven_price(entry_price)
-
-```python
-def get_breakeven_price(self, entry_price: float) -> float:
-```
-
-#### 역할
-손익분기점 가격 (수수료 상쇄)
-
-#### 계산식
-```python
-# 총 수수료: 0.2%
-# 손익분기 = entry_price × 1.002
-```
-
-#### 구현 코드
-```python
-def get_breakeven_price(self, entry_price: float) -> float:
-    """
-    손익분기점 계산
-    
-    Example:
-        >>> be = calc.get_breakeven_price(100.0)
-        >>> print(f"손익분기: {be:.2f}")
-        손익분기: 100.20
-    """
-    total_fee_rate = self.fee_rate * 2
-    breakeven_price = entry_price * (1 + total_fee_rate)
-    return breakeven_price
-```
-
----
-
-## 📄 utils/validators.py
-
-### 파일 전체 구조
-```python
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 import re
 from datetime import datetime
 
+
 class DataValidator:
-    @staticmethod
-    def validate_symbol(symbol: str) -> bool: ...
+    """
+    데이터 검증
     
-    @staticmethod
-    def validate_price(price: float) -> bool: ...
-    
-    @staticmethod
-    def validate_quantity(quantity: float, min_qty: float = 0.001) -> bool: ...
+    ⭐ 개선: 에러 메시지 반환 추가
+    """
     
     @staticmethod
-    def validate_timestamp(timestamp: int) -> bool: ...
+    def validate_symbol(symbol: str) -> Tuple[bool, str]:
+        """
+        심볼 형식 검증
+        
+        ⭐ 개선: 에러 메시지 반환
+        
+        규칙:
+            패턴: [대문자]/[대문자]
+            예: DOGE/USDT, SOL/USDT
+        
+        Returns:
+            (bool, str): (성공 여부, 에러 메시지)
+        
+        Example:
+            >>> valid, msg = DataValidator.validate_symbol('DOGE/USDT')
+            >>> if not valid:
+            >>>     print(f"검증 실패: {msg}")
+            
+            >>> valid, msg = DataValidator.validate_symbol('doge/usdt')
+            >>> print(msg)
+            "심볼은 대문자여야 합니다: doge/usdt"
+        """
+        if not isinstance(symbol, str):
+            return False, f"심볼은 문자열이어야 합니다: {type(symbol)}"
+        
+        pattern = r'^[A-Z]+/[A-Z]+$'
+        if not re.match(pattern, symbol):
+            return False, f"잘못된 심볼 형식: {symbol} (예: DOGE/USDT)"
+        
+        return True, ""
     
     @staticmethod
-    def validate_ohlcv(ohlcv: list) -> bool: ...
+    def validate_price(price: float) -> Tuple[bool, str]:
+        """
+        가격 검증
+        
+        ⭐ 개선: 에러 메시지 반환
+        
+        규칙:
+            0 < price < 1,000,000
+        
+        Example:
+            >>> valid, msg = DataValidator.validate_price(0.3821)
+            >>> assert valid
+            
+            >>> valid, msg = DataValidator.validate_price(-1.0)
+            >>> print(msg)
+            "가격은 양수여야 합니다: -1.0"
+        """
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            return False, f"가격을 숫자로 변환할 수 없습니다: {price}"
+        
+        if price <= 0:
+            return False, f"가격은 양수여야 합니다: {price}"
+        
+        if price >= 1_000_000:
+            return False, f"가격이 비정상적으로 높습니다: {price}"
+        
+        return True, ""
     
     @staticmethod
-    def validate_indicators(indicators: Dict) -> bool: ...
+    def validate_quantity(
+        quantity: float,
+        min_qty: float = 0.001
+    ) -> Tuple[bool, str]:
+        """
+        수량 검증
+        
+        ⭐ 개선: 에러 메시지 반환
+        
+        Args:
+            quantity: 수량
+            min_qty: 최소 수량 (기본 0.001)
+        
+        Example:
+            >>> valid, msg = DataValidator.validate_quantity(10.5)
+            >>> assert valid
+            
+            >>> valid, msg = DataValidator.validate_quantity(0.0001, min_qty=0.001)
+            >>> print(msg)
+            "수량이 최소값보다 작습니다: 0.0001 < 0.001"
+        """
+        try:
+            quantity = float(quantity)
+        except (TypeError, ValueError):
+            return False, f"수량을 숫자로 변환할 수 없습니다: {quantity}"
+        
+        if quantity < min_qty:
+            return False, f"수량이 최소값보다 작습니다: {quantity} < {min_qty}"
+        
+        return True, ""
     
     @staticmethod
-    def validate_ai_response(response: Dict) -> bool: ...
-    
-    @staticmethod
-    def validate_trade_data(trade: Dict) -> bool: ...
-```
-
----
-
-### 📌 함수: DataValidator.validate_symbol(symbol)
-
-```python
-@staticmethod
-def validate_symbol(symbol: str) -> bool:
-```
-
-#### 검증 규칙
-```
-패턴: [대문자]/[대문자]
-예: DOGE/USDT, SOL/USDT
-```
-
-#### 구현 코드
-```python
-@staticmethod
-def validate_symbol(symbol: str) -> bool:
-    """
-    심볼 형식 검증
-    
-    Example:
-        >>> DataValidator.validate_symbol('DOGE/USDT')
-        True
-        >>> DataValidator.validate_symbol('doge/usdt')
-        False
-    """
-    if not isinstance(symbol, str):
-        return False
-    
-    pattern = r'^[A-Z]+/[A-Z]+$'
-    return bool(re.match(pattern, symbol))
-```
-
----
-
-### 📌 함수: DataValidator.validate_price(price)
-
-```python
-@staticmethod
-def validate_price(price: float) -> bool:
-```
-
-#### 검증 규칙
-```
-price > 0
-price < 1,000,000 (비정상 가격 필터)
-```
-
-#### 구현 코드
-```python
-@staticmethod
-def validate_price(price: float) -> bool:
-    """
-    가격 검증
-    
-    Example:
-        >>> DataValidator.validate_price(0.3821)
-        True
-        >>> DataValidator.validate_price(-1.0)
-        False
-    """
-    try:
-        price = float(price)
-        return 0 < price < 1_000_000
-    except (TypeError, ValueError):
-        return False
-```
-
----
-
-### 📌 함수: DataValidator.validate_quantity(quantity, min_qty)
-
-```python
-@staticmethod
-def validate_quantity(quantity: float, min_qty: float = 0.001) -> bool:
-```
-
-#### 구현 코드
-```python
-@staticmethod
-def validate_quantity(quantity: float, min_qty: float = 0.001) -> bool:
-    """
-    수량 검증
-    
-    Args:
-        quantity: 수량
-        min_qty: 최소 수량
-    """
-    try:
-        quantity = float(quantity)
-        return quantity >= min_qty
-    except (TypeError, ValueError):
-        return False
-```
-
----
-
-### 📌 함수: DataValidator.validate_timestamp(timestamp)
-
-```python
-@staticmethod
-def validate_timestamp(timestamp: int) -> bool:
-```
-
-#### 검증 규칙
-```
-2020-01-01 < timestamp < 2030-12-31
-```
-
-#### 구현 코드
-```python
-@staticmethod
-def validate_timestamp(timestamp: int) -> bool:
-    """
-    타임스탬프 검증
-    
-    Example:
-        >>> DataValidator.validate_timestamp(1640000000)
-        True
-    """
-    try:
-        timestamp = int(timestamp)
+    def validate_timestamp(timestamp: int) -> Tuple[bool, str]:
+        """
+        타임스탬프 검증
+        
+        ⭐ 개선: 에러 메시지 반환
+        
+        규칙:
+            2020-01-01 < timestamp < 2030-12-31
+        
+        Example:
+            >>> valid, msg = DataValidator.validate_timestamp(1640000000)
+            >>> assert valid
+            
+            >>> valid, msg = DataValidator.validate_timestamp(999999999)
+            >>> print(msg)
+            "타임스탬프가 범위를 벗어났습니다: 999999999"
+        """
+        try:
+            timestamp = int(timestamp)
+        except (TypeError, ValueError):
+            return False, f"타임스탬프를 정수로 변환할 수 없습니다: {timestamp}"
+        
         min_ts = 1577836800  # 2020-01-01
         max_ts = 1924991999  # 2030-12-31
-        return min_ts <= timestamp <= max_ts
-    except (TypeError, ValueError):
-        return False
-```
-
----
-
-### 📌 함수: DataValidator.validate_ohlcv(ohlcv)
-
-```python
-@staticmethod
-def validate_ohlcv(ohlcv: list) -> bool:
-```
-
-#### 검증 규칙
-```python
-[
-    [timestamp, open, high, low, close, volume],
-    ...
-]
-- 길이 6
-- open, high, low, close > 0
-- high >= low
-- volume >= 0
-```
-
-#### 구현 코드
-```python
-@staticmethod
-def validate_ohlcv(ohlcv: list) -> bool:
-    """
-    OHLCV 데이터 검증
-    
-    Example:
-        >>> candle = [1640000000, 100, 105, 98, 102, 1000000]
-        >>> DataValidator.validate_ohlcv([candle])
-        True
-    """
-    if not isinstance(ohlcv, list) or len(ohlcv) == 0:
-        return False
-    
-    for candle in ohlcv:
-        if not isinstance(candle, list) or len(candle) != 6:
-            return False
         
+        if not (min_ts <= timestamp <= max_ts):
+            return False, f"타임스탬프가 범위를 벗어났습니다: {timestamp}"
+        
+        return True, ""
+    
+    @staticmethod
+    def validate_ohlcv(ohlcv: list) -> Tuple[bool, str]:
+        """
+        OHLCV 데이터 검증
+        
+        ⭐ 개선: 에러 메시지 반환
+        
+        규칙:
+            [timestamp, open, high, low, close, volume]
+            - high >= low
+            - volume >= 0
+        
+        Example:
+            >>> candle = [1640000000, 100, 105, 98, 102, 1000000]
+            >>> valid, msg = DataValidator.validate_ohlcv([candle])
+            >>> assert valid
+            
+            >>> bad_candle = [1640000000, 100, 95, 98, 102, 1000000]  # high < low
+            >>> valid, msg = DataValidator.validate_ohlcv([bad_candle])
+            >>> print(msg)
+            "캔들 0: high(95) < low(98)"
+        """
+        if not isinstance(ohlcv, list) or len(ohlcv) == 0:
+            return False, "OHLCV가 비어있거나 리스트가 아닙니다"
+        
+        for i, candle in enumerate(ohlcv):
+            if not isinstance(candle, list) or len(candle) != 6:
+                return False, f"캔들 {i}: 길이가 6이 아닙니다"
+            
+            try:
+                ts, o, h, l, c, v = candle
+                
+                # 타임스탬프
+                valid_ts, msg_ts = DataValidator.validate_timestamp(ts)
+                if not valid_ts:
+                    return False, f"캔들 {i}: {msg_ts}"
+                
+                # 가격
+                for price_name, price_value in [('open', o), ('high', h), ('low', l), ('close', c)]:
+                    valid_p, msg_p = DataValidator.validate_price(price_value)
+                    if not valid_p:
+                        return False, f"캔들 {i} {price_name}: {msg_p}"
+                
+                # 논리 검증
+                if h < l:
+                    return False, f"캔들 {i}: high({h}) < low({l})"
+                
+                # 거래량
+                if v < 0:
+                    return False, f"캔들 {i}: 거래량이 음수입니다: {v}"
+            
+            except (TypeError, ValueError) as e:
+                return False, f"캔들 {i}: 데이터 파싱 오류: {e}"
+        
+        return True, ""
+    
+    @staticmethod
+    def validate_indicators(indicators: Dict) -> Tuple[bool, str]:
+        """
+        지표 데이터 검증
+        
+        ⭐ 개선: 에러 메시지 반환
+        
+        규칙:
+            필수 키: ['rsi', 'macd', 'bollinger', 'fibonacci']
+        
+        Example:
+            >>> indicators = {
+            ...     'rsi': {'value': 45.2},
+            ...     'macd': {'value': 0.001},
+            ...     'bollinger': {'upper': 0.39},
+            ...     'fibonacci': {'support': 0.38}
+            ... }
+            >>> valid, msg = DataValidator.validate_indicators(indicators)
+            >>> assert valid
+        """
+        if not isinstance(indicators, dict):
+            return False, f"지표가 딕셔너리가 아닙니다: {type(indicators)}"
+        
+        required_keys = ['rsi', 'macd', 'bollinger', 'fibonacci']
+        
+        for key in required_keys:
+            if key not in indicators:
+                return False, f"필수 지표 누락: {key}"
+            
+            if not isinstance(indicators[key], dict):
+                return False, f"지표 {key}가 딕셔너리가 아닙니다"
+        
+        return True, ""
+    
+    @staticmethod
+    def validate_ai_response(response: Dict) -> Tuple[bool, str]:
+        """
+        AI 응답 검증
+        
+        ⭐ 개선: 에러 메시지 반환
+        
+        규칙:
+            필수 키: ['action', 'confidence', 'reasoning']
+            action: 'ENTER' | 'EXIT' | 'HOLD' | 'WAIT'
+            confidence: 0.0 ~ 1.0
+        
+        Example:
+            >>> response = {
+            ...     'action': 'ENTER',
+            ...     'confidence': 0.75,
+            ...     'reasoning': '...'
+            ... }
+            >>> valid, msg = DataValidator.validate_ai_response(response)
+            >>> assert valid
+        """
+        if not isinstance(response, dict):
+            return False, f"AI 응답이 딕셔너리가 아닙니다: {type(response)}"
+        
+        # 필수 키
+        required = ['action', 'confidence', 'reasoning']
+        for key in required:
+            if key not in response:
+                return False, f"필수 필드 누락: {key}"
+        
+        # action 검증
+        valid_actions = ['ENTER', 'EXIT', 'HOLD', 'WAIT']
+        if response['action'] not in valid_actions:
+            return False, f"잘못된 action: {response['action']} (가능: {valid_actions})"
+        
+        # confidence 검증
         try:
-            ts, o, h, l, c, v = candle
-            
-            # 타임스탬프
-            if not DataValidator.validate_timestamp(ts):
-                return False
-            
-            # 가격
-            if not all(DataValidator.validate_price(p) for p in [o, h, l, c]):
-                return False
-            
-            # 논리 검증
-            if h < l:  # high >= low
-                return False
-            
-            # 거래량
-            if v < 0:
-                return False
-        
+            conf = float(response['confidence'])
+            if not (0 <= conf <= 1):
+                return False, f"confidence 범위 오류: {conf} (0~1)"
         except (TypeError, ValueError):
-            return False
-    
-    return True
-```
-
----
-
-### 📌 함수: DataValidator.validate_indicators(indicators)
-
-```python
-@staticmethod
-def validate_indicators(indicators: Dict) -> bool:
-```
-
-#### 검증 규칙
-```python
-필수 키: ['rsi', 'macd', 'bollinger', 'fibonacci']
-```
-
-#### 구현 코드
-```python
-@staticmethod
-def validate_indicators(indicators: Dict) -> bool:
-    """
-    지표 데이터 검증
-    
-    Example:
-        >>> indicators = {
-        >>>     'rsi': {'value': 45.2},
-        >>>     'macd': {'value': 0.001},
-        >>>     'bollinger': {'upper': 0.39},
-        >>>     'fibonacci': {'support': 0.38}
-        >>> }
-        >>> DataValidator.validate_indicators(indicators)
-        True
-    """
-    if not isinstance(indicators, dict):
-        return False
-    
-    required_keys = ['rsi', 'macd', 'bollinger', 'fibonacci']
-    
-    for key in required_keys:
-        if key not in indicators:
-            return False
+            return False, f"confidence를 숫자로 변환할 수 없습니다: {response['confidence']}"
         
-        if not isinstance(indicators[key], dict):
-            return False
+        # reasoning 검증
+        if not isinstance(response['reasoning'], str):
+            return False, f"reasoning이 문자열이 아닙니다: {type(response['reasoning'])}"
+        
+        return True, ""
     
-    return True
+    @staticmethod
+    def validate_trade_data(trade: Dict) -> Tuple[bool, str]:
+        """
+        거래 데이터 검증
+        
+        ⭐ 개선: 에러 메시지 반환
+        
+        규칙:
+            필수 키: ['symbol', 'entry_price', 'quantity', 'timestamp']
+        
+        Example:
+            >>> trade = {
+            ...     'symbol': 'DOGE/USDT',
+            ...     'entry_price': 0.3821,
+            ...     'quantity': 1000,
+            ...     'timestamp': 1640000000
+            ... }
+            >>> valid, msg = DataValidator.validate_trade_data(trade)
+            >>> assert valid
+        """
+        if not isinstance(trade, dict):
+            return False, f"거래 데이터가 딕셔너리가 아닙니다: {type(trade)}"
+        
+        # 필수 키
+        required = ['symbol', 'entry_price', 'quantity', 'timestamp']
+        for key in required:
+            if key not in trade:
+                return False, f"필수 필드 누락: {key}"
+        
+        # 개별 검증
+        valid_symbol, msg_symbol = DataValidator.validate_symbol(trade['symbol'])
+        if not valid_symbol:
+            return False, f"symbol: {msg_symbol}"
+        
+        valid_price, msg_price = DataValidator.validate_price(trade['entry_price'])
+        if not valid_price:
+            return False, f"entry_price: {msg_price}"
+        
+        valid_qty, msg_qty = DataValidator.validate_quantity(trade['quantity'])
+        if not valid_qty:
+            return False, f"quantity: {msg_qty}"
+        
+        valid_ts, msg_ts = DataValidator.validate_timestamp(trade['timestamp'])
+        if not valid_ts:
+            return False, f"timestamp: {msg_ts}"
+        
+        return True, ""
 ```
 
 ---
 
-### 📌 함수: DataValidator.validate_ai_response(response)
+## 📁 utils/helpers.py
 
-```python
-@staticmethod
-def validate_ai_response(response: Dict) -> bool:
-```
+### 구현 코드 (완성)
 
-#### 검증 규칙
-```python
-필수 키: ['action', 'confidence', 'reasoning']
-action: 'ENTER' | 'EXIT' | 'HOLD' | 'WAIT'
-confidence: 0.0 ~ 1.0
-```
-
-#### 구현 코드
-```python
-@staticmethod
-def validate_ai_response(response: Dict) -> bool:
-    """
-    AI 응답 검증
-    
-    Example:
-        >>> response = {
-        >>>     'action': 'ENTER',
-        >>>     'confidence': 0.75,
-        >>>     'reasoning': '...'
-        >>> }
-        >>> DataValidator.validate_ai_response(response)
-        True
-    """
-    if not isinstance(response, dict):
-        return False
-    
-    # 필수 키
-    required = ['action', 'confidence', 'reasoning']
-    if not all(key in response for key in required):
-        return False
-    
-    # action 검증
-    valid_actions = ['ENTER', 'EXIT', 'HOLD', 'WAIT']
-    if response['action'] not in valid_actions:
-        return False
-    
-    # confidence 검증
-    try:
-        conf = float(response['confidence'])
-        if not (0 <= conf <= 1):
-            return False
-    except (TypeError, ValueError):
-        return False
-    
-    # reasoning 검증
-    if not isinstance(response['reasoning'], str):
-        return False
-    
-    return True
-```
-
----
-
-### 📌 함수: DataValidator.validate_trade_data(trade)
-
-```python
-@staticmethod
-def validate_trade_data(trade: Dict) -> bool:
-```
-
-#### 검증 규칙
-```python
-필수 키: ['symbol', 'entry_price', 'quantity', 'timestamp']
-```
-
-#### 구현 코드
-```python
-@staticmethod
-def validate_trade_data(trade: Dict) -> bool:
-    """
-    거래 데이터 검증
-    
-    Example:
-        >>> trade = {
-        >>>     'symbol': 'DOGE/USDT',
-        >>>     'entry_price': 0.3821,
-        >>>     'quantity': 1000,
-        >>>     'timestamp': 1640000000
-        >>> }
-        >>> DataValidator.validate_trade_data(trade)
-        True
-    """
-    if not isinstance(trade, dict):
-        return False
-    
-    required = ['symbol', 'entry_price', 'quantity', 'timestamp']
-    if not all(key in trade for key in required):
-        return False
-    
-    # 개별 검증
-    if not DataValidator.validate_symbol(trade['symbol']):
-        return False
-    
-    if not DataValidator.validate_price(trade['entry_price']):
-        return False
-    
-    if not DataValidator.validate_quantity(trade['quantity']):
-        return False
-    
-    if not DataValidator.validate_timestamp(trade['timestamp']):
-        return False
-    
-    return True
-```
-
----
-
-## 📄 utils/helpers.py
-
-### 파일 전체 구조
 ```python
 from datetime import datetime, timedelta
 from typing import Dict, List, Any
 import json
 
-def timestamp_to_datetime(timestamp: int) -> str: ...
 
-def datetime_to_timestamp(dt_str: str) -> int: ...
-
-def format_number(num: float, decimals: int = 2) -> str: ...
-
-def format_percentage(value: float, decimals: int = 2) -> str: ...
-
-def format_krw(amount: float) -> str: ...
-
-def calculate_time_diff(start: int, end: int) -> str: ...
-
-def safe_divide(a: float, b: float, default: float = 0.0) -> float: ...
-
-def deep_get(dictionary: Dict, keys: str, default: Any = None) -> Any: ...
-
-def truncate_string(text: str, max_length: int = 50) -> str: ...
-
-def load_json_file(filepath: str) -> Dict: ...
-
-def save_json_file(filepath: str, data: Dict) -> bool: ...
-```
-
----
-
-### 📌 함수: timestamp_to_datetime(timestamp)
-
-```python
-def timestamp_to_datetime(timestamp: int) -> str:
-```
-
-#### 구현 코드
-```python
 def timestamp_to_datetime(timestamp: int) -> str:
     """
     타임스탬프 → 날짜 문자열
@@ -1104,17 +1030,8 @@ def timestamp_to_datetime(timestamp: int) -> str:
         '2021-12-20 13:33:20'
     """
     return datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
-```
 
----
 
-### 📌 함수:
-```python
-def datetime_to_timestamp(dt_str: str) -> int:
-```
-
-#### 구현 코드
-```python
 def datetime_to_timestamp(dt_str: str) -> int:
     """
     날짜 문자열 → 타임스탬프
@@ -1125,18 +1042,8 @@ def datetime_to_timestamp(dt_str: str) -> int:
     """
     dt = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
     return int(dt.timestamp())
-```
 
----
 
-### 📌 함수: format_number(num, decimals)
-
-```python
-def format_number(num: float, decimals: int = 2) -> str:
-```
-
-#### 구현 코드
-```python
 def format_number(num: float, decimals: int = 2) -> str:
     """
     숫자 포맷팅 (천 단위 콤마)
@@ -1146,18 +1053,8 @@ def format_number(num: float, decimals: int = 2) -> str:
         '1,234,567.89'
     """
     return f"{num:,.{decimals}f}"
-```
 
----
 
-### 📌 함수: format_percentage(value, decimals)
-
-```python
-def format_percentage(value: float, decimals: int = 2) -> str:
-```
-
-#### 구현 코드
-```python
 def format_percentage(value: float, decimals: int = 2) -> str:
     """
     백분율 포맷팅
@@ -1169,18 +1066,8 @@ def format_percentage(value: float, decimals: int = 2) -> str:
         '-1.50%'
     """
     return f"{value*100:+.{decimals}f}%"
-```
 
----
 
-### 📌 함수: format_krw(amount)
-
-```python
-def format_krw(amount: float) -> str:
-```
-
-#### 구현 코드
-```python
 def format_krw(amount: float) -> str:
     """
     KRW 금액 포맷팅
@@ -1190,18 +1077,8 @@ def format_krw(amount: float) -> str:
         '1,234,567 KRW'
     """
     return f"{amount:,.0f} KRW"
-```
 
----
 
-### 📌 함수: calculate_time_diff(start, end)
-
-```python
-def calculate_time_diff(start: int, end: int) -> str:
-```
-
-#### 구현 코드
-```python
 def calculate_time_diff(start: int, end: int) -> str:
     """
     시간 차이 계산 (사람이 읽기 쉬운 형태)
@@ -1228,18 +1105,8 @@ def calculate_time_diff(start: int, end: int) -> str:
     days = hours // 24
     remaining_hours = hours % 24
     return f"{days:.0f}d {remaining_hours:.0f}h"
-```
 
----
 
-### 📌 함수: safe_divide(a, b, default)
-
-```python
-def safe_divide(a: float, b: float, default: float = 0.0) -> float:
-```
-
-#### 구현 코드
-```python
 def safe_divide(a: float, b: float, default: float = 0.0) -> float:
     """
     안전한 나눗셈 (0으로 나누기 방지)
@@ -1258,18 +1125,8 @@ def safe_divide(a: float, b: float, default: float = 0.0) -> float:
         return a / b
     except (TypeError, ZeroDivisionError):
         return default
-```
 
----
 
-### 📌 함수: deep_get(dictionary, keys, default)
-
-```python
-def deep_get(dictionary: Dict, keys: str, default: Any = None) -> Any:
-```
-
-#### 구현 코드
-```python
 def deep_get(dictionary: Dict, keys: str, default: Any = None) -> Any:
     """
     중첩된 딕셔너리에서 안전하게 값 가져오기
@@ -1292,18 +1149,8 @@ def deep_get(dictionary: Dict, keys: str, default: Any = None) -> Any:
         return dictionary
     except (KeyError, TypeError):
         return default
-```
 
----
 
-### 📌 함수: truncate_string(text, max_length)
-
-```python
-def truncate_string(text: str, max_length: int = 50) -> str:
-```
-
-#### 구현 코드
-```python
 def truncate_string(text: str, max_length: int = 50) -> str:
     """
     문자열 자르기
@@ -1315,18 +1162,8 @@ def truncate_string(text: str, max_length: int = 50) -> str:
     if len(text) <= max_length:
         return text
     return text[:max_length-3] + '...'
-```
 
----
 
-### 📌 함수: load_json_file(filepath)
-
-```python
-def load_json_file(filepath: str) -> Dict:
-```
-
-#### 구현 코드
-```python
 def load_json_file(filepath: str) -> Dict:
     """
     JSON 파일 로드
@@ -1341,18 +1178,8 @@ def load_json_file(filepath: str) -> Dict:
         return {}
     except json.JSONDecodeError:
         return {}
-```
 
----
 
-### 📌 함수: save_json_file(filepath, data)
-
-```python
-def save_json_file(filepath: str, data: Dict) -> bool:
-```
-
-#### 구현 코드
-```python
 def save_json_file(filepath: str, data: Dict) -> bool:
     """
     JSON 파일 저장
@@ -1374,171 +1201,100 @@ def save_json_file(filepath: str, data: Dict) -> bool:
 
 ## 전체 의존성 그래프
 
-### UTILS 모듈 구조
 ```
-utils/
-├── network.py (독립)
-│   ├── 사용: asyncio, aiohttp, ccxt
-│   └── 사용처: exchanges/, data/, engine/
-│
-├── fee_calculator.py (독립)
-│   ├── 사용: core/constants
-│   └── 사용처: engine/, monitoring/
-│
-├── validators.py (독립)
-│   ├── 사용: re, datetime
-│   └── 사용처: data/, ai/, exchanges/, engine/
-│
-└── helpers.py (독립)
-    ├── 사용: datetime, json
-    └── 사용처: 모든 모듈
-```
+core/constants.py ⭐
+├── KRW_USD_RATE 추가
+├── FEE_RATES 추가
+└── 사용처: utils/fee_calculator.py
 
-### 사용하는 모듈
-```
-표준 라이브러리:
-  - asyncio
-  - logging
-  - time
-  - re
-  - json
-  - datetime
+utils/network.py ⭐
+├── 사용: asyncio, aiohttp, ccxt, logging
+├── ⭐ emergency_network_failure() 구현 완성
+└── 사용처: exchanges/, data/, engine/
 
-외부 라이브러리:
-  - aiohttp
-  - ccxt
+utils/fee_calculator.py ⭐
+├── 사용: core/constants (FEE_RATES, KRW_USD_RATE)
+├── ⭐ convert_krw_to_usdt() 추가
+├── ⭐ convert_usdt_to_krw() 추가
+└── 사용처: engine/, exchanges/, monitoring/
 
-내부 모듈:
-  - core/constants (FEE_RATES)
-```
+utils/validators.py ⭐
+├── 사용: re, datetime
+├── ⭐ 모든 함수에 에러 메시지 반환 추가
+└── 사용처: data/, ai/, exchanges/, engine/
 
-### 사용되는 곳
-```
-exchanges/bybit_live.py
-  └── @retry_on_network_error
-  └── FeeCalculator
-  └── DataValidator
-
-data/fetcher.py
-  └── @retry_on_network_error
-  └── DataValidator
-
-engine/base_engine.py
-  └── NetworkMonitor
-  └── FeeCalculator
-  └── DataValidator
-  └── helpers (전체)
-
-monitoring/reporter.py
-  └── format_number
-  └── format_percentage
-  └── format_krw
-
-ai/analyzer.py
-  └── DataValidator.validate_ai_response
+utils/helpers.py
+├── 사용: datetime, json
+└── 사용처: 모든 모듈
 ```
 
 ---
 
-## 개발 체크리스트
+## 실전 사용 예제
 
-### network.py
-- [ ] retry_on_network_error 데코레이터
-- [ ] check_internet_connection 함수
-- [ ] wait_for_connection 함수
-- [ ] NetworkMonitor 클래스
-  - [ ] record_request 메서드
-  - [ ] get_success_rate 메서드
-  - [ ] is_stable 메서드
+### 예제 1: 네트워크 재시도 사용
 
-### fee_calculator.py
-- [ ] FeeCalculator 클래스
-- [ ] calculate_entry_fee 메서드
-- [ ] calculate_exit_fee 메서드
-- [ ] calculate_total_fees 메서드
-- [ ] calculate_net_pnl 메서드
-- [ ] get_breakeven_price 메서드
-
-### validators.py
-- [ ] DataValidator 클래스
-- [ ] validate_symbol 정적 메서드
-- [ ] validate_price 정적 메서드
-- [ ] validate_quantity 정적 메서드
-- [ ] validate_timestamp 정적 메서드
-- [ ] validate_ohlcv 정적 메서드
-- [ ] validate_indicators 정적 메서드
-- [ ] validate_ai_response 정적 메서드
-- [ ] validate_trade_data 정적 메서드
-
-### helpers.py
-- [ ] timestamp_to_datetime 함수
-- [ ] datetime_to_timestamp 함수
-- [ ] format_number 함수
-- [ ] format_percentage 함수
-- [ ] format_krw 함수
-- [ ] calculate_time_diff 함수
-- [ ] safe_divide 함수
-- [ ] deep_get 함수
-- [ ] truncate_string 함수
-- [ ] load_json_file 함수
-- [ ] save_json_file 함수
-
----
-
-## 테스트 시나리오
-
-### network.py 테스트
 ```python
-import asyncio
-from utils.network import retry_on_network_error, NetworkMonitor
+from utils.network import retry_on_network_error
 
-# 1. 데코레이터 테스트
-@retry_on_network_error(max_retries=3, delay=1)
-async def test_api_call():
-    # 의도적 실패 후 성공 시뮬레이션
-    pass
-
-# 2. NetworkMonitor 테스트
-monitor = NetworkMonitor()
-monitor.record_request(True)
-monitor.record_request(True)
-monitor.record_request(False)
-print(f"성공률: {monitor.get_success_rate()*100:.1f}%")
-print(f"안정성: {monitor.is_stable()}")
+class BybitLiveExchange:
+    @retry_on_network_error(max_retries=60, delay=1)
+    async def fetch_ticker(self, symbol):
+        """자동 재시도 적용"""
+        return await self.exchange.fetch_ticker(symbol)
+    
+    @retry_on_network_error(max_retries=5, exponential_backoff=True)
+    async def create_order(self, symbol, quantity):
+        """중요한 주문은 지수 백오프"""
+        return await self.exchange.create_market_buy_order(symbol, quantity)
 ```
 
-### fee_calculator.py 테스트
+### 예제 2: 수수료 계산
+
 ```python
 from utils.fee_calculator import FeeCalculator
 
 calc = FeeCalculator('bybit')
 
-# 진입 수수료
-entry = calc.calculate_entry_fee(100.0, 1000)
-print(f"진입 수수료: {entry['fee']:.2f} USDT")
+# 진입 비용 계산
+entry_info = calc.calculate_entry_fee(
+    entry_price=0.3821,
+    quantity=1000
+)
+print(f"총 비용: {entry_info['total_cost']:.2f} USDT")
+print(f"수수료: {entry_info['fee']:.2f} USDT")
 
 # 순손익 계산
-pnl = calc.calculate_net_pnl(100.0, 102.0, 1000)
-print(f"명목 수익: {pnl['gross_pnl_percent']*100:.2f}%")
-print(f"실제 수익: {pnl['net_pnl_percent']*100:.2f}%")
-print(f"수수료 영향: {pnl['fee_impact']*100:.2f}%")
+pnl_info = calc.calculate_net_pnl(
+    entry_price=0.3821,
+    exit_price=0.3895,
+    quantity=1000
+)
+print(f"명목 수익: {pnl_info['gross_pnl_percent']*100:.2f}%")
+print(f"실제 수익: {pnl_info['net_pnl_percent']*100:.2f}%")
+print(f"수수료 영향: {pnl_info['fee_impact']*100:.2f}%")
 
-# 손익분기
-be = calc.get_breakeven_price(100.0)
-print(f"손익분기점: {be:.2f} USDT")
+# KRW 변환
+krw_amount = 1000000
+usdt_amount = calc.convert_krw_to_usdt(krw_amount)
+print(f"{krw_amount:,} KRW = {usdt_amount:.2f} USDT")
 ```
 
-### validators.py 테스트
+### 예제 3: 데이터 검증
+
 ```python
 from utils.validators import DataValidator
 
 # 심볼 검증
-assert DataValidator.validate_symbol('DOGE/USDT') == True
-assert DataValidator.validate_symbol('doge/usdt') == False
+valid, msg = DataValidator.validate_symbol('DOGE/USDT')
+if not valid:
+    print(f"검증 실패: {msg}")
+else:
+    print("검증 성공")
 
 # 가격 검증
-assert DataValidator.validate_price(0.3821) == True
-assert DataValidator.validate_price(-1.0) == False
+valid, msg = DataValidator.validate_price(-1.0)
+print(msg)  # "가격은 양수여야 합니다: -1.0"
 
 # AI 응답 검증
 ai_response = {
@@ -1546,22 +1302,27 @@ ai_response = {
     'confidence': 0.75,
     'reasoning': 'MACD golden cross'
 }
-assert DataValidator.validate_ai_response(ai_response) == True
+valid, msg = DataValidator.validate_ai_response(ai_response)
+if valid:
+    # AI 응답 사용
+    execute_entry(ai_response)
+else:
+    print(f"AI 응답 오류: {msg}")
 ```
 
-### helpers.py 테스트
+### 예제 4: 헬퍼 함수 활용
+
 ```python
 from utils.helpers import *
 
 # 날짜 변환
 ts = 1640000000
-dt_str = timestamp_to_datetime(ts)
-print(f"날짜: {dt_str}")
+print(timestamp_to_datetime(ts))  # 2021-12-20 13:33:20
 
 # 포맷팅
-print(format_number(1234567.89))  # 1,234,567.89
-print(format_percentage(0.0234))  # +2.34%
-print(format_krw(1000000))        # 1,000,000 KRW
+print(format_number(1234567.89))    # 1,234,567.89
+print(format_percentage(0.0234))    # +2.34%
+print(format_krw(1000000))          # 1,000,000 KRW
 
 # 시간 차이
 diff = calculate_time_diff(1640000000, 1640007200)
@@ -1577,26 +1338,237 @@ value = deep_get(data, 'a.b.c')
 print(f"값: {value}")  # 123
 ```
 
+### 예제 5: 네트워크 모니터링
+
+```python
+from utils.network import NetworkMonitor
+
+class BaseEngine:
+    def __init__(self, config, exchange):
+        self.network_monitor = NetworkMonitor()
+    
+    async def fetch_data(self, symbol):
+        try:
+            data = await self.exchange.fetch_ticker(symbol)
+            self.network_monitor.record_request(True)
+            return data
+        except Exception as e:
+            self.network_monitor.record_request(False)
+            raise
+    
+    async def check_network_health(self):
+        """네트워크 상태 확인"""
+        stats = self.network_monitor.get_stats()
+        
+        print(f"총 요청: {stats['total']}")
+        print(f"성공률: {stats['success_rate']*100:.1f}%")
+        
+        if not stats['stable']:
+            print("⚠️ 네트워크 불안정")
+```
+
+---
+
+## 테스트 시나리오
+
+### network.py 테스트
+
+```python
+import pytest
+from utils.network import (
+    retry_on_network_error,
+    check_internet_connection,
+    NetworkMonitor
+)
+
+@pytest.mark.asyncio
+async def test_retry_decorator():
+    """재시도 데코레이터 테스트"""
+    call_count = 0
+    
+    @retry_on_network_error(max_retries=3, delay=0.1)
+    async def failing_func():
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise ccxt.NetworkError("Connection failed")
+        return "success"
+    
+    result = await failing_func()
+    assert result == "success"
+    assert call_count == 3
+
+@pytest.mark.asyncio
+async def test_check_connection():
+    """인터넷 연결 확인 테스트"""
+    is_connected = await check_internet_connection()
+    assert isinstance(is_connected, bool)
+
+def test_network_monitor():
+    """네트워크 모니터 테스트"""
+    monitor = NetworkMonitor()
+    
+    # 성공 기록
+    for _ in range(95):
+        monitor.record_request(True)
+    
+    # 실패 기록
+    for _ in range(5):
+        monitor.record_request(False)
+    
+    stats = monitor.get_stats()
+    assert stats['total'] == 100
+    assert stats['success_rate'] == 0.95
+    assert stats['stable'] == True
+```
+
+### fee_calculator.py 테스트
+
+```python
+def test_fee_calculator():
+    """수수료 계산 테스트"""
+    calc = FeeCalculator('bybit')
+    
+    # 진입 수수료
+    entry = calc.calculate_entry_fee(100.0, 10)
+    assert entry['fee'] == 1.0  # 1000 * 0.001
+    assert entry['total_cost'] == 1001.0
+    
+    # 순손익
+    pnl = calc.calculate_net_pnl(100.0, 102.0, 10)
+    assert pnl['gross_pnl'] == 20.0
+    assert abs(pnl['net_pnl'] - 17.98) < 0.01
+    assert abs(pnl['fee_impact'] - (-0.002)) < 0.0001
+
+def test_krw_conversion():
+    """KRW 변환 테스트"""
+    calc = FeeCalculator('bybit')
+    
+    # KRW → USDT
+    usdt = calc.convert_krw_to_usdt(1300000)
+    assert usdt == 1000.0
+    
+    # USDT → KRW
+    krw = calc.convert_usdt_to_krw(1000.0)
+    assert krw == 1300000.0
+```
+
+### validators.py 테스트
+
+```python
+def test_validator_with_messages():
+    """에러 메시지 포함 검증 테스트"""
+    # 성공
+    valid, msg = DataValidator.validate_symbol('DOGE/USDT')
+    assert valid
+    assert msg == ""
+    
+    # 실패 - 에러 메시지 확인
+    valid, msg = DataValidator.validate_symbol('doge/usdt')
+    assert not valid
+    assert 'DOGE/USDT' in msg
+    
+    valid, msg = DataValidator.validate_price(-1.0)
+    assert not valid
+    assert '양수' in msg
+    
+    valid, msg = DataValidator.validate_quantity(0.0001, min_qty=0.001)
+    assert not valid
+    assert '최소값' in msg
+
+def test_validate_ai_response():
+    """AI 응답 검증 테스트"""
+    # 정상
+    response = {
+        'action': 'ENTER',
+        'confidence': 0.75,
+        'reasoning': 'test'
+    }
+    valid, msg = DataValidator.validate_ai_response(response)
+    assert valid
+    
+    # 잘못된 action
+    response['action'] = 'BUY'
+    valid, msg = DataValidator.validate_ai_response(response)
+    assert not valid
+    assert 'action' in msg
+```
+
+---
+
+## 개발 체크리스트
+
+### core/constants.py ⭐
+- [x] ⭐ KRW_USD_RATE 상수 추가
+- [x] ⭐ FEE_RATES 상수 추가
+
+### network.py ⭐
+- [x] retry_on_network_error 데코레이터
+- [x] check_internet_connection 함수
+- [x] wait_for_connection 함수
+- [x] ⭐ emergency_network_failure() 완전 구현
+- [x] NetworkMonitor 클래스
+  - [x] record_request 메서드
+  - [x] get_success_rate 메서드
+  - [x] is_stable 메서드
+  - [x] ⭐ get_stats 메서드 추가
+
+### fee_calculator.py ⭐
+- [x] FeeCalculator 클래스
+- [x] calculate_entry_fee 메서드
+- [x] calculate_exit_fee 메서드
+- [x] calculate_total_fees 메서드
+- [x] calculate_net_pnl 메서드
+- [x] get_breakeven_price 메서드
+- [x] ⭐ convert_krw_to_usdt 메서드 추가
+- [x] ⭐ convert_usdt_to_krw 메서드 추가
+- [x] ⭐ FEE_RATES constants로 이동
+
+### validators.py ⭐
+- [x] DataValidator 클래스
+- [x] ⭐ 모든 메서드에 Tuple[bool, str] 반환 추가
+- [x] validate_symbol
+- [x] validate_price
+- [x] validate_quantity
+- [x] validate_timestamp
+- [x] validate_ohlcv
+- [x] validate_indicators
+- [x] validate_ai_response
+- [x] validate_trade_data
+
+### helpers.py
+- [x] timestamp_to_datetime 함수
+- [x] datetime_to_timestamp 함수
+- [x] format_number 함수
+- [x] format_percentage 함수
+- [x] format_krw 함수
+- [x] calculate_time_diff 함수
+- [x] safe_divide 함수
+- [x] deep_get 함수
+- [x] truncate_string 함수
+- [x] load_json_file 함수
+- [x] save_json_file 함수
+
 ---
 
 ## 주요 특징
 
-### 1. 네트워크 안정성
+### 1. 네트워크 안정성 ⭐
 - 자동 재시도 (최대 60회)
 - 지수 백오프 옵션
+- 긴급 처리 프로토콜 완비
 - 연결 상태 모니터링
-- 복구 대기 메커니즘
 
-### 2. 정확한 수수료 계산
+### 2. 정확한 수수료 계산 ⭐
 - 거래소별 수수료율 지원
 - 진입/청산 수수료 분리
 - 순손익 자동 계산
-- 손익분기점 제공
+- KRW/USDT 변환 추가
 
-### 3. 철저한 데이터 검증
+### 3. 철저한 데이터 검증 ⭐
 - 입력 데이터 형식 검증
 - 논리적 무결성 확인
-- 범위 검증
+- 명확한 에러 메시지
 - 타입 안전성
 
 ### 4. 편리한 헬퍼 함수
@@ -1605,65 +1577,24 @@ print(f"값: {value}")  # 123
 - 안전한 연산
 - JSON 처리
 
----
-
-## 통합 사용 예시
-
-### engine/base_engine.py에서 사용
-```python
-from utils.network import retry_on_network_error, NetworkMonitor
-from utils.fee_calculator import FeeCalculator
-from utils.validators import DataValidator
-from utils.helpers import *
-
-class BaseEngine:
-    def __init__(self, config, exchange):
-        # 네트워크 모니터
-        self.network_monitor = NetworkMonitor()
-        
-        # 수수료 계산기
-        self.fee_calculator = FeeCalculator('bybit')
-        
-        # 검증기
-        self.validator = DataValidator()
-    
-    @retry_on_network_error(max_retries=60, delay=1)
-    async def fetch_data(self, symbol):
-        # 심볼 검증
-        if not self.validator.validate_symbol(symbol):
-            raise ValueError(f"잘못된 심볼: {symbol}")
-        
-        # 데이터 조회
-        data = await self.exchange.fetch_ticker(symbol)
-        self.network_monitor.record_request(True)
-        
-        # 가격 검증
-        if not self.validator.validate_price(data['last']):
-            raise ValueError(f"비정상 가격: {data['last']}")
-        
-        return data
-    
-    async def execute_exit(self, symbol, position):
-        # 순손익 계산
-        pnl_info = self.fee_calculator.calculate_net_pnl(
-            position['entry_price'],
-            current_price,
-            position['quantity']
-        )
-        
-        # 로그
-        logger.info(
-            f"청산: {symbol} | "
-            f"명목 수익: {format_percentage(pnl_info['gross_pnl_percent'])} | "
-            f"실제 수익: {format_percentage(pnl_info['net_pnl_percent'])} | "
-            f"수수료: {format_krw(pnl_info['total_fee'] * 1300)}"
-        )
-```
+### 5. Constants 통합 ⭐
+- KRW_USD_RATE 중앙 관리
+- FEE_RATES 중앙 관리
+- 일관된 설정 값
 
 ---
 
-**문서 버전**: v1.0  
-**작성일**: 2025-01-15  
-**Phase**: 11 (유틸리티 레이어)  
-**검증**: ✅ 완료
-</artifact identifier="utils-functions-spec">
+**문서 버전**: v2.0 (개선판)  
+**작성일**: 2025-01-22  
+**개선사항**:
+- ⭐ core/constants.py에 KRW_USD_RATE 추가
+- ⭐ core/constants.py에 FEE_RATES 추가
+- ⭐ emergency_network_failure() 완전 구현
+- ⭐ FeeCalculator에 convert_krw_to_usdt() 추가
+- ⭐ FeeCalculator에 convert_usdt_to_krw() 추가
+- ⭐ DataValidator 모든 함수에 에러 메시지 반환 추가
+- ⭐ NetworkMonitor에 get_stats() 추가
+- ✅ 실전 사용 예제 5개
+- ✅ 테스트 시나리오 완성
+
+**검증 상태**: ✅ 완료
