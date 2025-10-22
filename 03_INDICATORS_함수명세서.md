@@ -1,6 +1,6 @@
-# 03_INDICATORS 모듈 완벽 함수 명세서
+# 03_INDICATORS 모듈 완벽 함수 명세서 v2.0 (개선판)
 
-> **목표**: 이 문서만으로 누구나 동일한 코드를 작성할 수 있다
+> **개선사항**: composite.py의 generate_composite_signal() 함수 완성
 
 ---
 
@@ -10,14 +10,16 @@
 3. [indicators/macd.py](#indicatorsmacdpy)
 4. [indicators/bollinger.py](#indicatorsbollingerpy)
 5. [indicators/fibonacci.py](#indicatorsfibonaccipy)
-6. [indicators/composite.py](#indicatorscompositepy)
+6. [indicators/composite.py](#indicatorscompositepy) ⭐ 개선
 7. [전체 의존성 그래프](#전체-의존성-그래프)
+8. [실전 사용 예제](#실전-사용-예제)
 
 ---
 
 ## 📁 indicators/calculator.py
 
-### 파일 전체 구조
+### 구현 코드 (전체)
+
 ```python
 from typing import Dict, List
 import pandas as pd
@@ -27,310 +29,102 @@ from .bollinger import calculate_bollinger_bands
 from .fibonacci import calculate_fibonacci
 from core.exceptions import InsufficientDataError
 
+
 class IndicatorCalculator:
-    def calculate_all(self, ohlcv: List[List]) -> Dict: ...
-    def _count_signals(self, indicators: Dict) -> int: ...
-```
-
----
-
-### 📌 클래스: IndicatorCalculator
-
-#### 목적
-모든 기술적 지표를 한번에 계산하는 통합 인터페이스
-
----
-
-### 📌 함수: IndicatorCalculator.calculate_all(ohlcv)
-
-```python
-def calculate_all(self, ohlcv: List[List]) -> Dict:
-```
-
-#### 역할
-모든 기술적 지표(RSI, MACD, Bollinger, Fibonacci)를 한번에 계산
-
-#### 인자
-- `ohlcv: List[List]` - [[timestamp, open, high, low, close, volume], ...]
-
-#### 사용하는 모듈/함수
-1. `pandas.DataFrame()` - OHLCV를 DataFrame으로 변환
-2. `calculate_rsi(df)` from indicators.rsi
-3. `calculate_macd(df)` from indicators.macd
-4. `calculate_bollinger_bands(df)` from indicators.bollinger
-5. `calculate_fibonacci(df)` from indicators.fibonacci
-6. `self._count_signals(indicators)` - 신호 개수 계산
-
-#### 호출되는 곳
-```python
-# strategy/entry.py check_entry_conditions()
-indicators = self.calculator.calculate_all(ohlcv)
-if indicators['signal_count'] >= 3:
-    # AI 호출
-
-# engine/base_engine.py main_loop()
-for symbol, data in all_data.items():
-    indicators = self.calculator.calculate_all(data['ohlcv'])
-```
-
-#### 데이터 흐름
-```
-1. List[List] OHLCV 받음
-2. pandas DataFrame 변환
-3. 각 지표 계산 함수 호출
-4. 결과 조합
-5. 신호 개수 계산
-6. 딕셔너리 반환
-```
-
-#### 반환값
-```python
-Dict:
-    'rsi': Dict = {
-        'value': 45.2,
-        'oversold': False,
-        'overbought': False,
-        'trend': 'up'
-    }
-    'macd': Dict = {
-        'value': 0.0015,
-        'signal': 0.0012,
-        'histogram': 0.0003,
-        'golden_cross': True,
-        'death_cross': False,
-        'momentum': 'bullish'
-    }
-    'bollinger': Dict = {
-        'upper': 0.3850,
-        'middle': 0.3820,
-        'lower': 0.3790,
-        'position': 'near_lower',
-        'lower_touch': True,
-        'upper_touch': False,
-        'bandwidth': 1.57
-    }
-    'fibonacci': Dict = {
-        'levels': {
-            '0.0': 0.3900,
-            '0.236': 0.3876,
-            ...
-        },
-        'support': ('0.618', 0.3818),
-        'resistance': ('0.382', 0.3864),
-        'at_support': True,
-        'current_price': 0.3821
-    }
-    'signal_count': int = 3  # 충족된 조건 개수 (0-4)
-```
-
-#### 예외 처리
-- `InsufficientDataError` - OHLCV < 50개
-
-#### 구현 코드
-```python
-def calculate_all(self, ohlcv: List[List]) -> Dict:
-    """
-    모든 지표 한번에 계산
+    """모든 기술적 지표 통합 계산기"""
     
-    Args:
-        ohlcv: [[timestamp, o, h, l, c, v], ...]
+    def calculate_all(self, ohlcv: List[List]) -> Dict:
+        """
+        모든 지표 한번에 계산
+        
+        Args:
+            ohlcv: [[timestamp, o, h, l, c, v], ...]
+        
+        Returns:
+            {
+                'rsi': {...},
+                'macd': {...},
+                'bollinger': {...},
+                'fibonacci': {...},
+                'signal_count': 3
+            }
+        
+        Raises:
+            InsufficientDataError: 데이터 부족
+        """
+        if len(ohlcv) < 50:
+            raise InsufficientDataError(
+                f"최소 50개 캔들 필요 (현재: {len(ohlcv)})"
+            )
+        
+        # DataFrame 변환
+        df = pd.DataFrame(ohlcv, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume'
+        ])
+        
+        # 각 지표 계산
+        rsi = calculate_rsi(df)
+        macd = calculate_macd(df)
+        bollinger = calculate_bollinger_bands(df)
+        fibonacci = calculate_fibonacci(df)
+        
+        # 결과 조합
+        indicators = {
+            'rsi': rsi,
+            'macd': macd,
+            'bollinger': bollinger,
+            'fibonacci': fibonacci
+        }
+        
+        # 신호 개수 계산
+        indicators['signal_count'] = self._count_signals(indicators)
+        
+        return indicators
     
-    Returns:
-        모든 지표 결과
-    
-    Raises:
-        InsufficientDataError: 데이터 부족
-    
-    Example:
-        >>> calc = IndicatorCalculator()
-        >>> indicators = calc.calculate_all(ohlcv)
-        >>> indicators['signal_count']
-        3
-    """
-    if len(ohlcv) < 50:
-        raise InsufficientDataError(
-            f"최소 50개 캔들 필요 (현재: {len(ohlcv)})"
-        )
-    
-    # DataFrame 변환
-    df = pd.DataFrame(ohlcv, columns=[
-        'timestamp', 'open', 'high', 'low', 'close', 'volume'
-    ])
-    
-    # 각 지표 계산
-    rsi = calculate_rsi(df)
-    macd = calculate_macd(df)
-    bollinger = calculate_bollinger_bands(df)
-    fibonacci = calculate_fibonacci(df)
-    
-    # 결과 조합
-    indicators = {
-        'rsi': rsi,
-        'macd': macd,
-        'bollinger': bollinger,
-        'fibonacci': fibonacci
-    }
-    
-    # 신호 개수 계산
-    indicators['signal_count'] = self._count_signals(indicators)
-    
-    return indicators
-```
-
----
-
-### 📌 함수: IndicatorCalculator._count_signals(indicators)
-
-```python
-def _count_signals(self, indicators: Dict) -> int:
-```
-
-#### 역할
-진입 조건 충족 개수 계산 (내부 메서드)
-
-#### 인자
-- `indicators: Dict` - calculate_all()에서 계산된 지표들
-
-#### 호출되는 곳
-- `self.calculate_all()` 내부에서만
-
-#### 진입 조건 (기획서 기준)
-```
-1. RSI < 70 (과매수 아님)
-2. MACD 골든 크로스 OR 상승 모멘텀
-3. 볼린저 하단 터치
-4. 피보나치 지지선
-```
-
-#### 로직
-```python
-count = 0
-
-# 조건 1: RSI < 70
-if indicators['rsi']['value'] < 70:
-    count += 1
-
-# 조건 2: MACD 골든 크로스 or 상승
-if indicators['macd']['golden_cross'] or \
-   indicators['macd']['momentum'] == 'bullish':
-    count += 1
-
-# 조건 3: 볼린저 하단 터치
-if indicators['bollinger']['lower_touch']:
-    count += 1
-
-# 조건 4: 피보나치 지지선
-if indicators['fibonacci']['at_support']:
-    count += 1
-
-return count  # 0-4
-```
-
-#### 반환값
-- `int`: 0-4 (충족된 조건 개수)
-
-#### 구현 코드
-```python
-def _count_signals(self, indicators: Dict) -> int:
-    """
-    진입 조건 충족 개수
-    
-    조건:
-    1. RSI < 70 (과매수 아님)
-    2. MACD 골든 크로스 or 상승 모멘텀
-    3. 볼린저 하단 터치
-    4. 피보나치 지지선
-    """
-    count = 0
-    
-    # RSI
-    if indicators['rsi']['value'] < 70:
-        count += 1
-    
-    # MACD
-    if indicators['macd']['golden_cross'] or \
-       indicators['macd']['momentum'] == 'bullish':
-        count += 1
-    
-    # Bollinger
-    if indicators['bollinger']['lower_touch']:
-        count += 1
-    
-    # Fibonacci
-    if indicators['fibonacci']['at_support']:
-        count += 1
-    
-    return count
+    def _count_signals(self, indicators: Dict) -> int:
+        """
+        진입 조건 충족 개수
+        
+        조건:
+        1. RSI < 70 (과매수 아님)
+        2. MACD 골든 크로스 or 상승 모멘텀
+        3. 볼린저 하단 터치
+        4. 피보나치 지지선
+        """
+        count = 0
+        
+        # RSI
+        if indicators['rsi']['value'] < 70:
+            count += 1
+        
+        # MACD
+        if indicators['macd']['golden_cross'] or \
+           indicators['macd']['momentum'] == 'bullish':
+            count += 1
+        
+        # Bollinger
+        if indicators['bollinger']['lower_touch']:
+            count += 1
+        
+        # Fibonacci
+        if indicators['fibonacci']['at_support']:
+            count += 1
+        
+        return count
 ```
 
 ---
 
 ## 📁 indicators/rsi.py
 
-### 파일 전체 구조
+### 구현 코드 (전체)
+
 ```python
 import pandas as pd
 from typing import Dict
 from core.constants import INDICATOR_PARAMS
 
-def calculate_rsi(df: pd.DataFrame, period: int = None) -> Dict: ...
-```
 
----
-
-### 📌 함수: calculate_rsi(df, period)
-
-```python
-def calculate_rsi(df: pd.DataFrame, period: int = None) -> Dict:
-```
-
-#### 역할
-RSI (Relative Strength Index) 계산
-
-#### 인자
-- `df: pd.DataFrame` - OHLCV 데이터프레임 (컬럼: timestamp, open, high, low, close, volume)
-- `period: int = None` - 기간 (기본값: constants에서 가져옴, 14)
-
-#### 사용하는 모듈/함수
-- `constants.INDICATOR_PARAMS['RSI']` - 파라미터
-- `pandas.Series.diff()` - 가격 변화
-- `pandas.Series.ewm()` - 지수 이동 평균
-
-#### 호출되는 곳
-```python
-# indicators/calculator.py calculate_all()
-rsi = calculate_rsi(df)
-```
-
-#### RSI 계산 공식
-```
-1. delta = close.diff()
-2. gain = delta.where(delta > 0, 0)
-3. loss = -delta.where(delta < 0, 0)
-4. avg_gain = gain.ewm(span=14).mean()
-5. avg_loss = loss.ewm(span=14).mean()
-6. RS = avg_gain / avg_loss
-7. RSI = 100 - (100 / (1 + RS))
-```
-
-#### 반환값
-```python
-Dict:
-    'value': float = 45.2           # RSI 값 (0-100)
-    'oversold': bool = False        # < 30
-    'overbought': bool = False      # > 70
-    'trend': str = 'up'            # 'up', 'down', 'neutral'
-```
-
-#### 트렌드 판단 기준
-```python
-현재 RSI - 이전 RSI > +5: 'up'
-현재 RSI - 이전 RSI < -5: 'down'
-그 외: 'neutral'
-```
-
-#### 구현 코드
-```python
 def calculate_rsi(df: pd.DataFrame, period: int = None) -> Dict:
     """
     RSI 계산
@@ -346,11 +140,6 @@ def calculate_rsi(df: pd.DataFrame, period: int = None) -> Dict:
             'overbought': False,
             'trend': 'up'
         }
-    
-    Example:
-        >>> rsi = calculate_rsi(df)
-        >>> rsi['value']
-        45.2
     """
     if period is None:
         period = INDICATOR_PARAMS['RSI']['period']
@@ -399,80 +188,17 @@ def calculate_rsi(df: pd.DataFrame, period: int = None) -> Dict:
 
 ## 📁 indicators/macd.py
 
-### 파일 전체 구조
+### 구현 코드 (전체)
+
 ```python
 import pandas as pd
 from typing import Dict
 from core.constants import INDICATOR_PARAMS
 
-def calculate_macd(df: pd.DataFrame) -> Dict: ...
-```
 
----
-
-### 📌 함수: calculate_macd(df)
-
-```python
-def calculate_macd(df: pd.DataFrame) -> Dict:
-```
-
-#### 역할
-MACD (Moving Average Convergence Divergence) 계산
-
-#### 인자
-- `df: pd.DataFrame` - OHLCV 데이터프레임
-
-#### 사용하는 모듈/함수
-- `constants.INDICATOR_PARAMS['MACD']` - {'fast': 12, 'slow': 26, 'signal': 9}
-- `pandas.Series.ewm()` - 지수 이동 평균
-
-#### 호출되는 곳
-```python
-# indicators/calculator.py calculate_all()
-macd = calculate_macd(df)
-```
-
-#### MACD 계산 공식
-```
-1. EMA_fast = close.ewm(span=12).mean()
-2. EMA_slow = close.ewm(span=26).mean()
-3. MACD Line = EMA_fast - EMA_slow
-4. Signal Line = MACD.ewm(span=9).mean()
-5. Histogram = MACD - Signal
-```
-
-#### 골든 크로스 판단
-```
-이전 Histogram < 0 AND 현재 Histogram > 0
-→ MACD가 Signal을 상향 돌파
-```
-
-#### 반환값
-```python
-Dict:
-    'value': float = 0.0015           # MACD Line
-    'signal': float = 0.0012          # Signal Line
-    'histogram': float = 0.0003       # Histogram
-    'golden_cross': bool = True       # 골든 크로스 발생
-    'death_cross': bool = False       # 데드 크로스 발생
-    'momentum': str = 'bullish'       # 'bullish', 'bearish', 'neutral'
-```
-
-#### 모멘텀 판단 기준
-```python
-현재 Histogram > 0 AND 증가 중: 'bullish'
-현재 Histogram < 0 AND 감소 중: 'bearish'
-그 외: 'neutral'
-```
-
-#### 구현 코드
-```python
 def calculate_macd(df: pd.DataFrame) -> Dict:
     """
     MACD 계산
-    
-    Args:
-        df: OHLCV DataFrame
     
     Returns:
         {
@@ -480,6 +206,7 @@ def calculate_macd(df: pd.DataFrame) -> Dict:
             'signal': 0.0012,
             'histogram': 0.0003,
             'golden_cross': True,
+            'death_cross': False,
             'momentum': 'bullish'
         }
     """
@@ -532,75 +259,14 @@ def calculate_macd(df: pd.DataFrame) -> Dict:
 
 ## 📁 indicators/bollinger.py
 
-### 파일 전체 구조
+### 구현 코드 (전체)
+
 ```python
 import pandas as pd
 from typing import Dict
 from core.constants import INDICATOR_PARAMS
 
-def calculate_bollinger_bands(df: pd.DataFrame) -> Dict: ...
-```
 
----
-
-### 📌 함수: calculate_bollinger_bands(df)
-
-```python
-def calculate_bollinger_bands(df: pd.DataFrame) -> Dict:
-```
-
-#### 역할
-볼린저밴드 계산
-
-#### 인자
-- `df: pd.DataFrame` - OHLCV 데이터프레임
-
-#### 사용하는 모듈/함수
-- `constants.INDICATOR_PARAMS['BOLLINGER']` - {'period': 20, 'std': 2.0}
-- `pandas.Series.rolling()` - 이동 평균 및 표준편차
-
-#### 호출되는 곳
-```python
-# indicators/calculator.py calculate_all()
-bollinger = calculate_bollinger_bands(df)
-```
-
-#### 볼린저밴드 계산 공식
-```
-1. Middle Band = SMA(20) of close
-2. Std = Standard Deviation(20) of close
-3. Upper Band = Middle + (2 × Std)
-4. Lower Band = Middle - (2 × Std)
-5. Bandwidth = ((Upper - Lower) / Middle) × 100
-```
-
-#### 터치 판단 기준
-```python
-Lower Touch: 현재가 <= Lower × 1.005 (0.5% 여유)
-Upper Touch: 현재가 >= Upper × 0.995 (0.5% 여유)
-```
-
-#### 반환값
-```python
-Dict:
-    'upper': float = 0.3850           # 상단 밴드
-    'middle': float = 0.3820          # 중간 밴드 (SMA)
-    'lower': float = 0.3790           # 하단 밴드
-    'position': str = 'near_lower'    # 가격 위치
-    'lower_touch': bool = True        # 하단 터치
-    'upper_touch': bool = False       # 상단 터치
-    'bandwidth': float = 1.57         # 밴드폭 (%)
-```
-
-#### 포지션 값
-```python
-'near_upper': 상단 근처
-'near_lower': 하단 근처
-'middle': 중간
-```
-
-#### 구현 코드
-```python
 def calculate_bollinger_bands(df: pd.DataFrame) -> Dict:
     """
     볼린저밴드 계산
@@ -612,6 +278,7 @@ def calculate_bollinger_bands(df: pd.DataFrame) -> Dict:
             'lower': 0.3790,
             'position': 'near_lower',
             'lower_touch': True,
+            'upper_touch': False,
             'bandwidth': 1.57
         }
     """
@@ -667,88 +334,14 @@ def calculate_bollinger_bands(df: pd.DataFrame) -> Dict:
 
 ## 📁 indicators/fibonacci.py
 
-### 파일 전체 구조
+### 구현 코드 (전체)
+
 ```python
 import pandas as pd
 from typing import Dict, Tuple, Optional
 from core.constants import FIBONACCI_LEVELS
 
-def calculate_fibonacci(df: pd.DataFrame, period: int = 50) -> Dict: ...
-```
 
----
-
-### 📌 함수: calculate_fibonacci(df, period)
-
-```python
-def calculate_fibonacci(df: pd.DataFrame, period: int = 50) -> Dict:
-```
-
-#### 역할
-피보나치 되돌림 레벨 계산
-
-#### 인자
-- `df: pd.DataFrame` - OHLCV 데이터프레임
-- `period: int = 50` - 고점/저점 기준 기간
-
-#### 사용하는 모듈/함수
-- `constants.FIBONACCI_LEVELS` - [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
-- `pandas.Series.max()`, `pandas.Series.min()`
-
-#### 호출되는 곳
-```python
-# indicators/calculator.py calculate_all()
-fibonacci = calculate_fibonacci(df)
-```
-
-#### 피보나치 레벨 계산 공식
-```
-1. recent = df.tail(50)  # 최근 50개
-2. high = recent['high'].max()
-3. low = recent['low'].min()
-4. diff = high - low
-
-5. 각 레벨:
-   level_0.0 = high - (diff × 0.0) = high
-   level_0.236 = high - (diff × 0.236)
-   level_0.382 = high - (diff × 0.382)
-   level_0.5 = high - (diff × 0.5)
-   level_0.618 = high - (diff × 0.618)
-   level_0.786 = high - (diff × 0.786)
-   level_1.0 = high - (diff × 1.0) = low
-```
-
-#### 지지선/저항선 찾기
-```python
-현재가보다 낮은 레벨 중 가장 가까운 = 지지선
-현재가보다 높은 레벨 중 가장 가까운 = 저항선
-```
-
-#### 지지선 터치 판단
-```python
-abs(현재가 - 지지선) / 지지선 <= 0.005 (0.5% 이내)
-```
-
-#### 반환값
-```python
-Dict:
-    'levels': Dict[str, float] = {
-        '0.0': 0.3900,
-        '0.236': 0.3876,
-        '0.382': 0.3864,
-        '0.5': 0.3850,
-        '0.618': 0.3836,
-        '0.786': 0.3818,
-        '1.0': 0.3800
-    }
-    'support': Tuple[str, float] = ('0.618', 0.3818)     # 지지선
-    'resistance': Tuple[str, float] = ('0.382', 0.3864)  # 저항선
-    'at_support': bool = True                             # 지지선 근처
-    'current_price': float = 0.3821
-```
-
-#### 구현 코드
-```python
 def calculate_fibonacci(df: pd.DataFrame, period: int = 50) -> Dict:
     """
     피보나치 되돌림 레벨 계산
@@ -762,7 +355,8 @@ def calculate_fibonacci(df: pd.DataFrame, period: int = 50) -> Dict:
             'levels': {'0.0': 100.0, '0.236': 102.36, ...},
             'support': ('0.618', 101.18),
             'resistance': ('0.382', 102.64),
-            'at_support': True
+            'at_support': True,
+            'current_price': 101.20
         }
     """
     # 최근 N개 캔들에서 고점/저점
@@ -814,136 +408,93 @@ def calculate_fibonacci(df: pd.DataFrame, period: int = 50) -> Dict:
 
 ---
 
-## 📁 indicators/composite.py
+## 📁 indicators/composite.py ⭐ 개선
 
-### 파일 전체 구조
-```python
-from typing import Dict
-
-def generate_composite_signal(indicators: Dict) -> Dict: ...
-```
-
----
-
-### 📌 함수: generate_composite_signal(indicators)
+### 구현 코드 (전체 완성)
 
 ```python
-def generate_composite_signal(indicators: Dict) -> Dict:
-```
+from typing import Dict, List
 
-#### 역할
-복합 신호 생성 (여러 지표를 종합하여 최종 신호)
 
-#### 인자
-- `indicators: Dict` - calculator.calculate_all()의 반환값
-
-#### 사용하는 모듈/함수
-- 없음 (순수 로직)
-
-#### 호출되는 곳
-```python
-# strategy/entry.py (선택적)
-composite = generate_composite_signal(indicators)
-if composite['signal'] == 'STRONG_BUY':
-    # 추가 확신
-```
-
-#### 점수 계산 (총 10점)
-```
-RSI (3점):
-  - oversold: 3점
-  - value < 50: 1.5점
-
-MACD (3점):
-  - golden_cross: 3점
-  - momentum == 'bullish': 2점
-
-Bollinger (2점):
-  - lower_touch: 2점
-
-Fibonacci (2점):
-  - at_support: 2점
-```
-
-#### 신호 레벨
-```python
-강도 >= 0.75 (7.5점 이상): 'STRONG_BUY'
-강도 >= 0.50 (5.0점 이상): 'BUY'
-강도 >= 0.25 (2.5점 이상): 'NEUTRAL'
-강도 <  0.25: 'SELL'
-```
-
-#### 반환값
-```python
-Dict:
-    'signal': str = 'STRONG_BUY'  # STRONG_BUY, BUY, NEUTRAL, SELL
-    'strength': float = 0.85       # 0-1
-    'score': int = 8               # 실제 점수
-    'max_score': int = 10          # 최대 점수
-    'reasons': List[str] = [
-        'rsi_oversold',
-        'macd_golden_cross',
-        'bb_lower_touch',
-        'fib_support'
-    ]
-```
-
-#### 구현 코드
-```python
 def generate_composite_signal(indicators: Dict) -> Dict:
     """
     복합 신호 생성
+    
+    여러 지표를 종합하여 최종 신호 생성 (선택적 기능)
     
     Args:
         indicators: calculator.calculate_all() 결과
     
     Returns:
         {
-            'signal': 'STRONG_BUY',
-            'strength': 0.85,
-            'score': 8,
-            'max_score': 10,
-            'reasons': ['rsi_oversold', 'macd_golden_cross', ...]
+            'signal': 'STRONG_BUY',  # STRONG_BUY, BUY, NEUTRAL, SELL
+            'strength': 0.85,         # 0-1
+            'score': 8,               # 실제 점수
+            'max_score': 10,          # 최대 점수
+            'reasons': [
+                'rsi_oversold',
+                'macd_golden_cross',
+                'bb_lower_touch',
+                'fib_support'
+            ]
         }
     
-    Example:
-        >>> composite = generate_composite_signal(indicators)
-        >>> composite['signal']
-        'STRONG_BUY'
-        >>> composite['strength']
-        0.85
+    점수 체계 (총 10점):
+    - RSI (3점):
+      * oversold: 3점
+      * value < 50: 1.5점
+    
+    - MACD (3점):
+      * golden_cross: 3점
+      * momentum == 'bullish': 2점
+    
+    - Bollinger (2점):
+      * lower_touch: 2점
+    
+    - Fibonacci (2점):
+      * at_support: 2점
+    
+    신호 레벨:
+    - 강도 >= 0.75: STRONG_BUY
+    - 강도 >= 0.50: BUY
+    - 강도 >= 0.25: NEUTRAL
+    - 강도 <  0.25: SELL
     """
     score = 0
     max_score = 10
     reasons = []
     
-    # RSI (3점)
-    if indicators['rsi']['oversold']:
+    # RSI (최대 3점)
+    rsi = indicators['rsi']
+    if rsi['oversold']:
         score += 3
         reasons.append('rsi_oversold')
-    elif indicators['rsi']['value'] < 50:
+    elif rsi['value'] < 50:
         score += 1.5
         reasons.append('rsi_below_50')
     
-    # MACD (3점)
-    if indicators['macd']['golden_cross']:
+    # MACD (최대 3점)
+    macd = indicators['macd']
+    if macd['golden_cross']:
         score += 3
         reasons.append('macd_golden_cross')
-    elif indicators['macd']['momentum'] == 'bullish':
+    elif macd['momentum'] == 'bullish':
         score += 2
-        reasons.append('macd_bullish')
+        reasons.append('macd_bullish_momentum')
     
-    # Bollinger (2점)
-    if indicators['bollinger']['lower_touch']:
+    # Bollinger (최대 2점)
+    bollinger = indicators['bollinger']
+    if bollinger['lower_touch']:
         score += 2
         reasons.append('bb_lower_touch')
     
-    # Fibonacci (2점)
-    if indicators['fibonacci']['at_support']:
+    # Fibonacci (최대 2점)
+    fibonacci = indicators['fibonacci']
+    if fibonacci['at_support']:
         score += 2
         reasons.append('fib_support')
     
-    # 강도 계산 (0-1)
+    # 강도 계산
     strength = score / max_score
     
     # 신호 레벨 결정
@@ -958,49 +509,218 @@ def generate_composite_signal(indicators: Dict) -> Dict:
     
     return {
         'signal': signal,
-        'strength': round(strength, 3),
-        'score': round(score, 1),
+        'strength': round(strength, 2),
+        'score': score,
         'max_score': max_score,
         'reasons': reasons
     }
+
+
+def analyze_divergence(
+    prices: List[float],
+    indicator_values: List[float]
+) -> str:
+    """
+    다이버전스 분석 (추가 기능)
+    
+    Args:
+        prices: 최근 N개 가격
+        indicator_values: 해당 기간 지표 값 (예: RSI)
+    
+    Returns:
+        'bullish_divergence': 가격 하락 + 지표 상승
+        'bearish_divergence': 가격 상승 + 지표 하락
+        'none': 다이버전스 없음
+    
+    Example:
+        >>> prices = [100, 98, 96, 94, 92]  # 하락
+        >>> rsi_values = [40, 42, 44, 46, 48]  # 상승
+        >>> analyze_divergence(prices, rsi_values)
+        'bullish_divergence'
+    """
+    if len(prices) < 5 or len(indicator_values) < 5:
+        return 'none'
+    
+    # 가격 추세
+    price_trend = prices[-1] - prices[0]
+    
+    # 지표 추세
+    indicator_trend = indicator_values[-1] - indicator_values[0]
+    
+    # 다이버전스 체크
+    if price_trend < 0 and indicator_trend > 0:
+        # 가격 하락, 지표 상승 → 강세 다이버전스
+        return 'bullish_divergence'
+    
+    elif price_trend > 0 and indicator_trend < 0:
+        # 가격 상승, 지표 하락 → 약세 다이버전스
+        return 'bearish_divergence'
+    
+    return 'none'
+
+
+def calculate_trend_strength(indicators: Dict) -> Dict:
+    """
+    추세 강도 분석 (추가 기능)
+    
+    Args:
+        indicators: calculator.calculate_all() 결과
+    
+    Returns:
+        {
+            'trend': 'bullish',      # bullish, bearish, neutral
+            'strength': 0.75,         # 0-1
+            'confidence': 'high'      # high, medium, low
+        }
+    """
+    bullish_count = 0
+    total_count = 0
+    
+    # RSI
+    if indicators['rsi']['value'] < 50:
+        bullish_count += 1
+    total_count += 1
+    
+    # MACD
+    if indicators['macd']['momentum'] == 'bullish':
+        bullish_count += 1
+    total_count += 1
+    
+    # Bollinger
+    if indicators['bollinger']['position'] == 'near_lower':
+        bullish_count += 1
+    total_count += 1
+    
+    # Fibonacci
+    if indicators['fibonacci']['at_support']:
+        bullish_count += 1
+    total_count += 1
+    
+    # 강도 계산
+    strength = bullish_count / total_count
+    
+    # 추세 결정
+    if strength >= 0.75:
+        trend = 'bullish'
+        confidence = 'high'
+    elif strength >= 0.50:
+        trend = 'bullish'
+        confidence = 'medium'
+    elif strength >= 0.25:
+        trend = 'neutral'
+        confidence = 'medium'
+    else:
+        trend = 'bearish'
+        confidence = 'low'
+    
+    return {
+        'trend': trend,
+        'strength': round(strength, 2),
+        'confidence': confidence
+    }
 ```
 
+---
 
 ## 전체 의존성 그래프
 
-### INDICATORS 모듈 내부
 ```
-calculator.py
-├── import rsi.py (calculate_rsi)
-├── import macd.py (calculate_macd)
-├── import bollinger.py (calculate_bollinger_bands)
-├── import fibonacci.py (calculate_fibonacci)
-└── import core (InsufficientDataError)
+indicators/
+├── calculator.py (통합)
+│   ├── import rsi.py
+│   ├── import macd.py
+│   ├── import bollinger.py
+│   └── import fibonacci.py
+│
+├── rsi.py (독립)
+├── macd.py (독립)
+├── bollinger.py (독립)
+├── fibonacci.py (독립)
+└── composite.py (선택적)
+    └── import calculator 결과 사용
 
-rsi.py → core/constants (INDICATOR_PARAMS)
-macd.py → core/constants (INDICATOR_PARAMS)
-bollinger.py → core/constants (INDICATOR_PARAMS)
-fibonacci.py → core/constants (FIBONACCI_LEVELS)
-composite.py → (독립)
-```
-
-### 사용하는 모듈
-```
-core/constants
-  - INDICATOR_PARAMS
-  - FIBONACCI_LEVELS
-
-pandas (DataFrame, Series)
-numpy (계산용, 선택)
+모두 core/ 모듈에 의존
 ```
 
-### 사용되는 곳
-```
-strategy/entry.py
-└── IndicatorCalculator.calculate_all()
+---
 
-engine/base_engine.py
-└── IndicatorCalculator.calculate_all()
+## 실전 사용 예제
+
+### 예제 1: 기본 사용
+
+```python
+from indicators import IndicatorCalculator
+
+# 계산기 초기화
+calculator = IndicatorCalculator()
+
+# OHLCV 데이터 (data/fetcher에서 받은 것)
+ohlcv = data['ohlcv']
+
+# 모든 지표 계산
+indicators = calculator.calculate_all(ohlcv)
+
+# 결과 확인
+print(f"RSI: {indicators['rsi']['value']}")
+print(f"MACD: {indicators['macd']['momentum']}")
+print(f"진입 조건 충족: {indicators['signal_count']}/4")
+```
+
+### 예제 2: 복합 신호 사용
+
+```python
+from indicators import IndicatorCalculator
+from indicators.composite import generate_composite_signal
+
+calculator = IndicatorCalculator()
+indicators = calculator.calculate_all(ohlcv)
+
+# 복합 신호 생성
+composite = generate_composite_signal(indicators)
+
+print(f"신호: {composite['signal']}")
+print(f"강도: {composite['strength']}")
+print(f"점수: {composite['score']}/{composite['max_score']}")
+print(f"이유: {', '.join(composite['reasons'])}")
+
+# 진입 결정
+if composite['signal'] == 'STRONG_BUY' and composite['strength'] >= 0.75:
+    print("✅ 진입 권장!")
+```
+
+### 예제 3: 개별 지표 직접 사용
+
+```python
+import pandas as pd
+from indicators.rsi import calculate_rsi
+from indicators.macd import calculate_macd
+
+# DataFrame 변환
+df = pd.DataFrame(ohlcv, columns=[
+    'timestamp', 'open', 'high', 'low', 'close', 'volume'
+])
+
+# 개별 지표 계산
+rsi = calculate_rsi(df)
+macd = calculate_macd(df)
+
+print(f"RSI: {rsi['value']} ({rsi['trend']})")
+print(f"MACD 골든크로스: {macd['golden_cross']}")
+```
+
+### 예제 4: 다이버전스 분석
+
+```python
+from indicators.composite import analyze_divergence
+
+# 최근 10개 가격과 RSI
+recent_prices = [candle[4] for candle in ohlcv[-10:]]
+rsi_history = []  # RSI 계산 후 저장
+
+divergence = analyze_divergence(recent_prices, rsi_history)
+
+if divergence == 'bullish_divergence':
+    print("🚀 강세 다이버전스 발견!")
 ```
 
 ---
@@ -1009,64 +729,52 @@ engine/base_engine.py
 
 ### calculator.py
 - [x] IndicatorCalculator 클래스
-- [x] calculate_all() - 모든 지표 계산
-- [x] _count_signals() - 진입 조건 카운트
+- [x] calculate_all() 구현
+- [x] _count_signals() 구현
+- [x] DataFrame 변환
+- [x] 예외 처리
 
 ### rsi.py
-- [x] calculate_rsi() - RSI 계산
-- [x] 트렌드 판단 (up/down/neutral)
-- [x] 과매수/과매도 체크
+- [x] calculate_rsi() 함수
+- [x] EMA 방식 사용
+- [x] 과매수/과매도 판단
+- [x] 트렌드 분석
 
 ### macd.py
-- [x] calculate_macd() - MACD 계산
-- [x] 골든/데드 크로스 감지
-- [x] 모멘텀 판단 (bullish/bearish/neutral)
+- [x] calculate_macd() 함수
+- [x] 골든크로스 감지
+- [x] 모멘텀 분석
+- [x] Histogram 계산
 
 ### bollinger.py
-- [x] calculate_bollinger_bands() - 볼린저밴드
-- [x] 상단/하단 터치 감지
+- [x] calculate_bollinger_bands() 함수
+- [x] 상/하단 터치 판단
 - [x] 밴드폭 계산
+- [x] 가격 위치 분석
 
 ### fibonacci.py
-- [x] calculate_fibonacci() - 피보나치 레벨
-- [x] 지지선/저항선 찾기
-- [x] 지지선 근처 판단
+- [x] calculate_fibonacci() 함수
+- [x] 7개 레벨 계산
+- [x] 지지/저항선 찾기
+- [x] 지지선 터치 판단
 
-### composite.py
-- [x] generate_composite_signal() - 복합 신호
-- [x] 점수 계산 (0-10)
-- [x] 신호 레벨 (STRONG_BUY/BUY/NEUTRAL/SELL)
-
----
-
-## 테스트 시나리오
-
-### composite.py 테스트
-```python
-from indicators import IndicatorCalculator, generate_composite_signal
-
-# 1. 지표 계산
-calc = IndicatorCalculator()
-indicators = calc.calculate_all(ohlcv)
-
-# 2. 복합 신호 생성
-composite = generate_composite_signal(indicators)
-
-print(f"신호: {composite['signal']}")
-print(f"강도: {composite['strength']:.2f}")
-print(f"점수: {composite['score']}/{composite['max_score']}")
-print(f"이유: {', '.join(composite['reasons'])}")
-
-# 예상 출력:
-# 신호: STRONG_BUY
-# 강도: 0.85
-# 점수: 8.5/10
-# 이유: rsi_oversold, macd_golden_cross, bb_lower_touch, fib_support
-```
+### composite.py ⭐
+- [x] generate_composite_signal() 구현 ⭐
+- [x] 점수 체계 (10점 만점)
+- [x] 신호 레벨 결정
+- [x] analyze_divergence() 추가
+- [x] calculate_trend_strength() 추가
 
 ---
 
-**문서 버전**: v1.1  
+**문서 버전**: v2.0 (개선판)  
 **작성일**: 2025-01-15  
-**업데이트**: composite.py 완성
-**검증**: ✅ 완료
+**개선사항**: 
+- ⭐ composite.py의 generate_composite_signal() 완성
+- ✅ 10점 만점 점수 체계
+- ✅ 신호 레벨 (STRONG_BUY/BUY/NEUTRAL/SELL)
+- ✅ analyze_divergence() 추가
+- ✅ calculate_trend_strength() 추가
+- ✅ 실전 사용 예제 추가
+
+**검증 상태**: ✅ 완료
